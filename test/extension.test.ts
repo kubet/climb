@@ -1057,6 +1057,64 @@ describe("paired measurement", () => {
 	});
 });
 
+describe("one run, many numbers; two sides at once", () => {
+	test("metrics with one command share each run: a bench printing two numbers runs once per sample", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-shared-"));
+		const ctr = path.join(os.tmpdir(), `climb-shared-ctr-${process.pid}`);
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		const cmd = `n=$(cat ${ctr} 2>/dev/null || echo 0); echo $((n+1)) > ${ctr}; echo "lat=$(cat work.txt)"; echo "missed: 3"`;
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "shared");
+			await z.load();
+			await z.cmd("faster");
+			const out = await z.tool("climb_scorecard", { metrics: [{ name: "lat", cmd, dir: "down", target: 10, noise: 0.05 }, { name: "missed", cmd, dir: "down", hold: true }] });
+			expect(out).toContain("lat = 100");
+			expect(out).toContain("missed = 3");
+			// One smoke run and two more A/A runs, each feeding both metrics: 3 bench runs, not 6.
+			expect(Number(fs.readFileSync(ctr, "utf8"))).toBe(3);
+			expect(T.read(d).filter(t => t.kind === "run" && t.metric === "missed" && t.shared)).toHaveLength(3);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(ctr, { force: true });
+		}
+	});
+
+	test("a parallel metric runs base and candidate at the same time in each pair, told apart by $CLIMB_SLOT", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-parallel-"));
+		const ctr = path.join(os.tmpdir(), `climb-parallel-ctr-${process.pid}`);
+		const log = path.join(os.tmpdir(), `climb-parallel-log-${process.pid}`);
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		const now = `perl -MTime::HiRes=time -e 'printf "%.3f", time'`;
+		// Drifting like the paired test (every run reads 10 higher), so the measurement pairs; each run logs its slot and span.
+		const cmd = `t0=$(${now}); sleep 0.2; n=$(cat ${ctr} 2>/dev/null || echo 0); echo $((n+1)) > ${ctr}; echo "\${CLIMB_SLOT:-x} $t0 $(${now})" >> ${log}; echo $(( $(cat work.txt) + n * 10 ))`;
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && echo x > README.md && git add -A && git commit -qm init");
+			const z = host(d, "main", "parallel");
+			await z.load();
+			await z.cmd("faster");
+			await z.tool("climb_scorecard", { metrics: [{ name: "ms", cmd, dir: "down", target: 10, noise: 0.05, samples: 3, parallel: true }] });
+			expect(L.fold(L.read(d)).goals.get("g-faster")!.card!.metrics[0].parallel).toBe(true);
+			await z.tool("climb_experiment", { lever: "noop", hypothesis: "", prediction: "" });
+			await run("echo y >> README.md && git commit -qam noop");
+			expect(await z.tool("climb_measure", {})).toContain("paired with the base");
+			await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" });
+			await run("echo 50 > work.txt && git commit -qam halve");
+			const out = await z.tool("climb_measure", {});
+			expect(out).toContain("KEPT x2");
+			expect(out).toContain("paired with the base");
+			const spans = fs.readFileSync(log, "utf8").trim().split("\n").map(l => l.split(" ")).filter(([slot]) => slot !== "x").map(([slot, a, b]) => ({ slot, a: Number(a), b: Number(b) }));
+			expect(new Set(spans.map(s => s.slot))).toEqual(new Set(["0", "1"]));
+			const overlap = spans.filter(s => s.slot === "1").every(base => spans.some(c => c.slot === "0" && c.a < base.b && base.a < c.b));
+			expect(overlap).toBe(true);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(ctr, { force: true });
+			fs.rmSync(log, { force: true });
+		}
+	}, 30_000);
+});
+
 describe("paired measurement, crashed", () => {
 	test("a paired run that crashes after pairs were collected decides nothing; the experiment stays open", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-paircrash-"));

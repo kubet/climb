@@ -20,6 +20,8 @@ export interface RunT extends Base {
 	kind: "run";
 	phase: Phase;
 	metric?: string;
+	/** Read from the output of a run made for another metric with the same command: it cost nothing. */
+	shared?: true;
 	/** Git tree measured: runs of one tree, at any time, are A/A data for its metric. */
 	tree?: string;
 	/** Fingerprint of the command: a metric re-registered with another command starts a new history. */

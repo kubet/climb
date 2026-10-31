@@ -21,6 +21,9 @@ export interface Metric {
 	timeout_s: number;
 	/** A constraint, not a goal: must not regress beyond noise; target = baseline. */
 	hold?: boolean;
+	/** Base and candidate may run at the same time in a pair: the command takes its port (or other exclusive
+	 *  resource) from $CLIMB_SLOT, 0 for the candidate and 1 for the base. */
+	parallel?: boolean;
 }
 
 export interface Cfg {

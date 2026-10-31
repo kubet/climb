@@ -31,6 +31,16 @@ export const DROP_STREAK = 3;
 export const MAX_PARTS = 4;
 export const MAX_DEPTH = 2;
 
+/** A metric's value in a command's output: its own `name=value` (or `name: value`, a JSON key) line when
+ *  the command prints several metrics, else the last number. One run then feeds every metric it prints. */
+export function valueOf(stdout: string, name?: string): number | undefined {
+	if (name) {
+		const hit = [...stdout.matchAll(new RegExp(`(?:^|[\\s{,"'])${name}["']?\\s*[=:]\\s*(-?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)`, "gm"))].at(-1);
+		if (hit) return Number(hit[1]);
+	}
+	return parseNumber(stdout);
+}
+
 export function parseNumber(stdout: string): number | undefined {
 	const lines = stdout.trim().split("\n");
 	for (let i = lines.length - 1; i >= 0; i--) {

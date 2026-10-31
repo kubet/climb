@@ -244,7 +244,7 @@ async function dispatch(m: { id?: string | number; method?: string; params?: Rec
 				// empty, or two climbs (omp's extension and this one) would drive one ledger.
 				if ((m.params?.clientInfo as { name?: string } | undefined)?.name === "claude-code") ready ??= start();
 				const asked = m.params?.protocolVersion as string;
-				return send({ id: m.id, result: { protocolVersion: VERSIONS.includes(asked) ? asked : VERSIONS.at(-1), capabilities: { tools: {} }, serverInfo: { name: "climb", version: "0.3.2" } } });
+				return send({ id: m.id, result: { protocolVersion: VERSIONS.includes(asked) ? asked : VERSIONS.at(-1), capabilities: { tools: {} }, serverInfo: { name: "climb", version: "0.3.3" } } });
 			}
 			case "ping":
 				return send({ id: m.id, result: {} });
