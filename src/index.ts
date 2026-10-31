@@ -2231,8 +2231,6 @@ export default async function climb(pi: ExtensionAPI) {
 			}
 			const intent = rest.join(" ");
 			if (!intent) return ctx.ui.notify("Usage: /climb <intent> [--beat 30m] [--poke-max 3]", "error");
-			if (L.roots(st).length >= X.MAX_GOALS)
-				return ctx.ui.notify(`${X.MAX_GOALS} goals already active; finish one (/climb done <goal>) first. Focus beats breadth.`, "error");
 			if (!(await head(root))) return ctx.ui.notify("climb needs at least one commit.", "error");
 			const id = X.slug(intent, new Set(st.goals.keys()));
 			// A live session already climbing this checkout shares its tree, its benchmarks and its ledger: a second goal
@@ -2249,6 +2247,20 @@ export default async function climb(pi: ExtensionAPI) {
 				away.set(root, home);
 				ctx.ui.notify(`Another live session is climbing ${root}${busy?.open ? ` (${busy.open.id} open on ${busy.id})` : ""}, so this goal climbs in its own checkout: ${home}. Edit and commit there.`, "info");
 			}
+			// The user's new intent is never refused for the cap: it supersedes the goal whose tree saw no work the longest
+			// (voice's "FUCKING CLIMB BEST SPEECH PIPELINE" was refused at 19:05 for a 3-day-old tree, and only the worker heard it).
+			// A goal in its own checkout (another live session climbs this one) has no cap to meet.
+			let superseded = "";
+			const tops = home === root ? L.roots(st) : [];
+			if (tops.length >= X.MAX_GOALS) {
+				const last = (g: L.Goal) => Math.max(g.seq, ...L.subtree(st, g).map(x => Math.max(x.workSeq, x.seq)));
+				const old = tops.filter(t => !L.subtree(st, t).some(x => x.open)).sort((a, b) => last(a) - last(b))[0];
+				if (!old) return ctx.ui.notify(`${X.MAX_GOALS} goals are active, each with an experiment open: measure or abandon one (climb_measure), or /climb done <goal>, then start this one.`, "error");
+				const since = L.read(root)[last(old)]?.ts.slice(0, 16).replace("T", " ");
+				for (const x of L.subtree(st, old).filter(x => !x.done).reverse())
+					append(root, { ts: L.now(), kind: "done", goal: x.id, result: "abandoned", values: x.best, why: `superseded by the user's new goal: ${intent.slice(0, 120)}` });
+				superseded = ` ${old.id} (no work since ${since ?? "long ago"}) is closed to keep the focus on ${X.MAX_GOALS} goals; its record stays in the ledger.`;
+			}
 			await ensureExcluded(home);
 			const fresh = load(home);
 			append(home, { ts: L.now(), kind: "goal", goal: id, intent, cfg: { poke_max, beat_s }, harness });
@@ -2257,7 +2269,7 @@ export default async function climb(pi: ExtensionAPI) {
 			lease(home, ctx, true);
 			ensureTimer(ctx);
 			const g = refresh(ctx, home).goals.get(id)!;
-			ctx.ui.notify(`climb ${id} started · heartbeat every ${Math.round(beat_s / 60) || `${beat_s}s`}${beat_s >= 60 ? "m" : ""} · judge after ${poke_max} stale beats`, "info");
+			ctx.ui.notify(`climb ${id} started · heartbeat every ${Math.round(beat_s / 60) || `${beat_s}s`}${beat_s >= 60 ? "m" : ""} · judge after ${poke_max} stale beats.${superseded}`, "info");
 			pi.sendUserMessage(X.researchBrief(g));
 			await started(ctx);
 		},

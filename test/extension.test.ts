@@ -1285,6 +1285,25 @@ describe("move", () => {
 		}
 	});
 
+	test("a new goal at the cap supersedes the goal whose tree saw no work the longest; the user's intent is never dropped", async () => {
+		const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-cap-")));
+		await repo(d);
+		try {
+			const z = host(d, "main", "cap");
+			await z.load();
+			await z.cmd("an old goal from days ago");
+			await z.cmd("shrink work");
+			await z.tool("climb_probe", { goal: "g-shrink-work", name: "w", cmd: "cat work.txt" });
+			await z.cmd("climb the best speech pipeline");
+			const st = L.fold(L.read(d));
+			expect(L.roots(st).map(g => g.id).sort()).toEqual(["g-climb-the-best-speech", "g-shrink-work"].sort());
+			expect(st.goals.get("g-an-old-goal-from")?.done).toMatchObject({ result: "abandoned", why: expect.stringContaining("superseded by the user's new goal") });
+			expect(z.notes.some(n => n.includes("g-climb-the-best-speech started") && n.includes("g-an-old-goal-from (no work since"))).toBe(true);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	test("/climb move carries the climb to a clean checkout and the session climbs there at once", async () => {
 		const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-mv-")));
 		const wt = `${d}-wt`;

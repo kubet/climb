@@ -108,6 +108,8 @@ export interface DoneE extends Base {
 	values: Values;
 	/** Achieved without the acceptance review, and why it did not run. */
 	unreviewed?: string;
+	/** Why it was abandoned, when not by the user's /climb done (a new goal superseded it). */
+	why?: string;
 }
 export interface PauseE extends Base { kind: "pause" | "resume" }
 export interface RollupE extends Base { kind: "rollup"; cd: number; n: number; from: string; to: string; progress: number; stale: number; values?: Values }
