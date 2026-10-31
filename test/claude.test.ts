@@ -127,9 +127,10 @@ describe("Claude Code plugin", () => {
 			expect(exported.goals[0].harness).toBe("claude-code");
 			expect(exported.metric_rows[0]).toMatchObject({ harness: "claude-code", verdict: "kept", before: 100, after: 50 });
 
-			// A refusal comes back as a tool error, as omp shows it.
+			// A refusal says what is not done and why; Claude Code would show an error result as "MCP task failed".
 			const busy = await s.tool("climb_measure", {});
-			expect(busy.isError).toBe(true);
+			expect(busy.isError).toBeUndefined();
+			expect(busy.content[0].text).toMatch(/^Not done: No open experiment/);
 			const paused = await s.hook({ event: "UserPromptSubmit", prompt: "/climb pause" });
 			expect(paused.hookSpecificOutput.additionalContext).toContain("climb paused");
 			// Claude Code knows the command as /climb:climb: a bare /climb is "Unknown command" there, and paths keep their names.

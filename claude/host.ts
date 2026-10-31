@@ -269,7 +269,9 @@ export async function createHost(io: { send: (msg: object) => void }, carry?: Ca
 			const r = await tool.execute(String(id), p.arguments ?? {}, ac.signal, (u: { content: Text[] }) => progress((last = u.content.map(c => c.text).join(""))), ctx);
 			return { content: r.content.map(c => ({ type: "text", text: c.text })) };
 		} catch (e) {
-			return { content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }], isError: true };
+			// A refusal is the climb doing its job (a coin-toss metric, a dirty tree), not a crash: Claude Code shows an
+			// error result as "MCP task failed", which read as the plugin breaking. It says what is not done and why.
+			return { content: [{ type: "text", text: `Not done: ${e instanceof Error ? e.message : String(e)}` }] };
 		} finally {
 			clearInterval(keepalive);
 			measuring--;
