@@ -51,6 +51,14 @@ type Update = (partial: { content: { type: "text"; text: string }[] }) => void;
 const pos = (v: number | null | undefined, d: number) => (typeof v === "number" && v > 0 ? v : d);
 const SYSTEM = /^\/(dev|usr|bin|sbin|etc|opt|nix|proc|System|Library|Applications)(\/|$)/;
 const sha = (text: string) => createHash("sha1").update(text).digest("hex");
+/** A path with its directory's symlinks resolved (/tmp is /private/tmp); the file need not exist. */
+function realish(p: string): string {
+	try {
+		return path.join(fs.realpathSync(path.dirname(p)), path.basename(p));
+	} catch {
+		return p;
+	}
+}
 const cmdId = (cmd: string) => sha(cmd).slice(0, 8);
 // What a base worktree never borrows from the repo. Build outputs and caches are derived from the code
 // (only untracked or ignored paths are linked at all, so an ignored lib/ or bin/ is a build output):
@@ -142,6 +150,8 @@ export default async function climb(pi: ExtensionAPI) {
 	const harness = (pi as { harness?: string }).harness ?? (omp ? "omp" : "pi");
 	const ENV = envOf(harness);
 	const roots = new Map<string, string>();
+	/** Root goals this session started or named. */
+	const mine = new Set<string>();
 	const judging = new Set<string>();
 	let ctxRef: Ctx | undefined;
 	let timer: unknown;
@@ -178,13 +188,85 @@ export default async function climb(pi: ExtensionAPI) {
 	// Both streams: `bun run x` echoes the script on stderr while tsc prints its errors on stdout.
 	const said = (r: { stdout: string; stderr: string }) => tail(`${r.stdout}\n${r.stderr}`);
 
+	/** The checkout a session climbs: its own, or the one its climb moved to (followed at once, no restart). */
 	async function repoRoot(cwd: string): Promise<string | undefined> {
-		const hit = roots.get(cwd);
-		if (hit) return hit;
-		const r = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 10_000 });
-		if (r.code !== 0) return undefined;
-		roots.set(cwd, r.stdout.trim());
-		return r.stdout.trim();
+		let top = roots.get(cwd);
+		if (!top) {
+			const r = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 10_000 });
+			if (r.code !== 0) return undefined;
+			top = r.stdout.trim();
+			roots.set(cwd, top);
+		}
+		return awayOf(top) ?? top;
+	}
+
+	// A climb that moved out of a checkout (its instrument lives elsewhere, or other work dirtied it) leaves
+	// .climb/away.json behind: sessions there follow it while it climbs on, unless another live session climbs here.
+	const away = new Map<string, string>();
+	const AWAY = "away.json";
+	function awayOf(top: string): string | undefined {
+		const mem = away.get(top);
+		if (mem) return mem;
+		const file = path.join(top, L.DIR, AWAY);
+		if (!fs.existsSync(file)) return undefined;
+		try {
+			const { to, goal } = JSON.parse(fs.readFileSync(file, "utf8")) as { to?: unknown; goal?: unknown };
+			if (typeof to !== "string" || !L.active(load(to)).some(g => goal === "*" || g.id === goal) || leasedElse(top)) return undefined;
+			away.set(top, to);
+			return to;
+		} catch {
+			return undefined;
+		}
+	}
+	function leasedElse(root: string): boolean {
+		try {
+			const cur = JSON.parse(fs.readFileSync(path.join(root, L.DIR, "lease.json"), "utf8")) as { who: string; ts: number };
+			return cur.who !== me(ctxRef as Ctx) && L.clock.ms() - cur.ts < LEASE_STALE_MS && !gone(cur.who);
+		} catch {
+			return false;
+		}
+	}
+
+	/** Carries a goal, with its parts, to the checkout it climbs in; this session follows it there at once.
+	 *  `keep`: sessions in `from` follow it after a restart too (not when another live session climbs `from`). */
+	async function relocate(ctx: Ctx, from: string, g: L.Goal, to: string, why: string, keep: boolean): Promise<void> {
+		const st = load(from);
+		const top = L.rootOf(st, g);
+		const ids = new Set(L.subtree(st, top).map(x => x.id));
+		const there = load(to);
+		const clash = [...ids].find(id => there.goals.has(id));
+		if (clash) throw new Error(`${to} already has a climb goal ${clash}; finish it there (/climb done ${clash}) or pass another goal.`);
+		L.append(to, ...L.read(from).filter(e => ids.has(e.goal)));
+		for (const t of T.read(from)) if (t.goal && ids.has(t.goal)) T.append(to, t);
+		await ensureExcluded(to);
+		append(from, ...[...ids].map(id => ({ ts: L.now(), kind: "moved" as const, goal: id, to })));
+		if (keep) fs.writeFileSync(path.join(from, L.DIR, AWAY), JSON.stringify({ to, goal: top.id }));
+		away.set(from, to);
+		release(from, ctx);
+		lease(to, ctx, true);
+		notices.push(`${top.id} now climbs in ${to} (${why}). Work there: edit, commit and run everything under ${to}. This session follows it with no restart; ${from} is left as it is.`);
+		refresh(ctx, to);
+	}
+
+	/** The climb's own checkout beside a shared one (<repo>-climb, branch climb/<goal>), with the repo's
+	 *  ignored dependencies and env files (node_modules, .env) linked in. */
+	async function ownCheckout(root: string, id: string): Promise<string> {
+		let dir = `${root}-climb`;
+		for (let i = 2; fs.existsSync(dir); i++) dir = `${root}-climb-${i}`;
+		let r = await git(root, "worktree", "add", "-b", `climb/${id}`, dir, "HEAD");
+		if (r.code !== 0) r = await git(root, "worktree", "add", "--detach", dir, "HEAD");
+		if (r.code !== 0) throw new Error(`climb could not make its own checkout (git worktree add ${dir} HEAD): ${said(r)}`);
+		const ignored = (await git(root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")).stdout
+			.split("\0")
+			.map(l => l.replace(/\/+$/, ""))
+			.filter(l => l && l !== L.DIR && !l.startsWith(`${L.DIR}/`) && !DERIVED.test(l) && !ENVS.test(l));
+		for (const rel of ignored.filter(rel => !leaksIntoRepo(root, rel, ignored))) {
+			const target = path.join(dir, rel);
+			if (fs.existsSync(target)) continue;
+			fs.mkdirSync(path.dirname(target), { recursive: true });
+			fs.symlinkSync(path.join(root, rel), target);
+		}
+		return dir;
 	}
 
 	async function needRoot(ctx: Ctx): Promise<string> {
@@ -520,8 +602,15 @@ export default async function climb(pi: ExtensionAPI) {
 		fs.writeFileSync(file, JSON.stringify({ who, ts: L.clock.ms() }));
 		return true;
 	}
+	/** This session no longer climbs `root`: its lease goes now, not after the stale window. */
+	function release(root: string, ctx: Ctx): void {
+		const file = path.join(root, L.DIR, "lease.json");
+		try {
+			if ((JSON.parse(fs.readFileSync(file, "utf8")) as { who: string }).who === me(ctx)) fs.rmSync(file, { force: true });
+		} catch {}
+	}
 	function holder(root: string, ctx: Ctx): void {
-		if (!lease(root, ctx)) throw new Error("Another omp/pi session is driving this climb. Run /climb resume in this session to take over.");
+		if (!lease(root, ctx)) throw new Error("Another live session is driving this climb. The user's /climb resume in this session takes it over.");
 	}
 
 	// A guard that passed on this tree minutes ago passes again: retries skip the test suite.
@@ -602,6 +691,11 @@ export default async function climb(pi: ExtensionAPI) {
 	const load = (root: string) => L.fold(L.read(root));
 
 	function pick(st: L.State, id?: string, pred?: (g: L.Goal) => boolean, exact = false): L.Goal {
+		const g = choose(st, id, pred, exact);
+		mine.add(L.rootOf(st, g).id);
+		return g;
+	}
+	function choose(st: L.State, id?: string, pred?: (g: L.Goal) => boolean, exact = false): L.Goal {
 		const goals = L.active(st);
 		if (id) {
 			// A worker often shortens a goal id: one open goal starting with it is meant. Never a longer id,
@@ -617,6 +711,9 @@ export default async function climb(pi: ExtensionAPI) {
 		const preferred = pred ? leaves.filter(pred) : [];
 		const c = preferred.length ? preferred : leaves;
 		if (c.length === 1) return c[0];
+		// Goals other sessions left behind are not this session's: the one it started or named is meant.
+		const ours = c.filter(g => mine.has(L.rootOf(st, g).id));
+		if (ours.length === 1) return ours[0];
 		if (c.length) throw new Error(`Several active goals; pass goal: ${c.map(g => g.id).join(", ")}.`);
 		throw new Error("No active climb goal. The user starts one with /climb <intent>.");
 	}
@@ -1090,6 +1187,23 @@ export default async function climb(pi: ExtensionAPI) {
 		if (event.toolName === "bash" && /git\s+clean\b[^"]*\s-\w*[xX]/.test(input))
 			return { block: true, reason: "git clean -x/-X would delete the climb ledger (.climb/)." };
 		const editing = /^(write|edit|apply_patch|ast_edit|notebook)$/.test(event.toolName);
+		const at0 = (event.input ?? {}) as Record<string, unknown>;
+		const files = Object.entries(at0)
+			.filter(([k, v]) => /path|file/i.test(k) && typeof v === "string")
+			.map(([, v]) => realish(path.resolve(ctx.cwd, v as string)));
+		// While climb measures its checkout, nothing may change it. Everything else goes on: reading, research,
+		// drafts and work outside it (voice's worker sat idle through every 8-minute measurement, all commands refused).
+		if (inFlight && (editing || event.toolName === "bash")) {
+			const root = await repoRoot(ctx.cwd);
+			const cwd = typeof at0.cwd === "string" && at0.cwd ? at0.cwd : ctx.cwd;
+			const inside = (f: string) => !!root && (f === root || f.startsWith(`${root}/`));
+			const hits = editing ? (event.toolName === "apply_patch" || !files.length ? !!root : files.some(inside)) : !!root && X.changesTree(String(at0.command ?? ""), root, realish(cwd), os.homedir(), realish);
+			if (hits)
+				return {
+					block: true,
+					reason: `climb is measuring ${root} right now: a change there would be measured with it. Reading, research and work outside it go on; draft the next change in a scratch file and apply it once the result arrives.`,
+				};
+		}
 		if (X.namesDir(input, L.DIR)) {
 			// The edit's target, not its text: a test or a doc that mentions the ledger is not the ledger. A patch names its files inside.
 			const at = event.input as { path?: unknown; file_path?: unknown; notebook_path?: unknown; command?: unknown } | undefined;
@@ -1156,14 +1270,37 @@ export default async function climb(pi: ExtensionAPI) {
 			),
 			parked: S.opt(S.arr(S.str("metric"), "Metrics worth tracking later, not now")),
 			axioms: S.opt(S.arr(S.str("axiom"), "Why these metrics")),
+			own_checkout: S.opt(S.bool("true when this checkout's uncommitted changes are not this goal's (another session's or the user's): the goal moves to a checkout of its own beside it, and this session follows it with no restart")),
 		}),
 		loadMode: "essential",
 		execute: logged("climb_scorecard", (_id, p: ScorecardParams, signal, onUpdate, ctx) => exclusive(async () => {
 			worker(ctx);
-			const root = await needRoot(ctx);
+			let root = await needRoot(ctx);
 			holder(root, ctx);
-			const g = pick(load(root), p.goal);
+			let g = pick(load(root), p.goal);
 			if (g.open) throw new Error(`Experiment ${g.open.id} is open; close it with climb_measure before changing the scorecard.`);
+			// A goal climbs where its instrument runs, in a checkout no other work touches: a goal started in a shared
+			// checkout (platinum-dev, another agent's edit uncommitted) whose commands cd into a design repo was refused there for an hour.
+			const into = p.metrics?.length ? X.cdInto([...p.metrics.map(m => m.cmd), ...(p.guard ? [p.guard] : [])], os.homedir()) : undefined;
+			const there = into && fs.existsSync(into) ? await repoRoot(into) : undefined;
+			const foreign = p.own_checkout ? await dirty(root) : "";
+			if (there && there !== root) {
+				await relocate(ctx, root, g, there, "its metric commands run there", true);
+				root = there;
+			} else if (foreign) {
+				const own = await ownCheckout(root, L.rootOf(load(root), g).id);
+				const n = foreign.split("\n").length;
+				await relocate(
+					ctx,
+					root,
+					g,
+					own,
+					`${root} has ${n} uncommitted change${n > 1 ? "s" : ""} that are not this goal's; they stay there untouched. Dependencies and env files are linked in; a virtualenv or build output is rebuilt there`,
+					true,
+				);
+				root = own;
+			}
+			g = pick(load(root), g.id);
 			const st0 = load(root);
 			if (L.umbrella(st0, g)) throw new Error(`${g.id} is split into parts (${L.openParts(st0, g).map(c => c.id).join(", ")}): give each part its own scorecard (goal: <part>).`);
 			if (!p.metrics?.length || p.metrics.length > X.MAX_METRICS)
@@ -1194,7 +1331,7 @@ export default async function climb(pi: ExtensionAPI) {
 			const d = await dirty(root);
 			if (d)
 				throw new Error(
-					`Working tree is dirty; commit or stash first so baselines are measured on a commit:\n${d}\nIf these changes are not this climb's (another session's or the user's work), leave them: the climb needs a checkout of its own. Create a clean worktree (git worktree add <path> HEAD) and ask the user to run /climb move <path>, then restart omp there.`,
+					`Working tree is dirty; commit or stash first so baselines are measured on a commit:\n${d}\nIf these changes are not this goal's (another session's or the user's work), leave them and call climb_scorecard again with own_checkout: true. climb then gives the goal its own checkout beside this one and this session follows it there, with no restart.`,
 				);
 			const metrics: L.Metric[] = p.metrics.map(m => ({
 				name: m.name,
@@ -1980,11 +2117,15 @@ export default async function climb(pi: ExtensionAPI) {
 				fs.mkdirSync(path.join(dest, L.DIR), { recursive: true });
 				for (const f of ["oracle.jsonl", "trace.jsonl"]) if (fs.existsSync(path.join(root, L.DIR, f))) fs.copyFileSync(path.join(root, L.DIR, f), path.join(dest, L.DIR, f));
 				await ensureExcluded(dest);
-				// This copy rests: no heartbeats or stop-blocking here once the climb lives there.
+				// This copy rests: no heartbeats or stop-blocking here once the climb lives there. This session follows it at once.
 				append(root, { ts: L.now(), kind: "pause", goal: "*" });
-				stopTimer(ctx);
-				refresh(ctx, root);
-				return ctx.ui.notify(`climb moved to ${dest} (this checkout's copy is paused). Now: /exit, then cd ${dest} && omp, then /climb resume.`, "info");
+				fs.writeFileSync(path.join(root, L.DIR, AWAY), JSON.stringify({ to: dest, goal: "*" }));
+				away.set(root, dest);
+				release(root, ctx);
+				lease(dest, ctx, true);
+				ensureTimer(ctx);
+				refresh(ctx, dest);
+				return ctx.ui.notify(`climb moved to ${dest}: this session climbs there now, no restart. Edit and commit under ${dest}.`, "info");
 			}
 			if (words.length === 1 && sub === "compact") {
 				const before = L.read(root);
@@ -2012,27 +2153,30 @@ export default async function climb(pi: ExtensionAPI) {
 			if (L.roots(st).length >= X.MAX_GOALS)
 				return ctx.ui.notify(`${X.MAX_GOALS} goals already active; finish one (/climb done <goal>) first. Focus beats breadth.`, "error");
 			if (!(await head(root))) return ctx.ui.notify("climb needs at least one commit.", "error");
+			const id = X.slug(intent, new Set(st.goals.keys()));
 			// A live session already climbing this checkout shares its tree, its benchmarks and its ledger: a second goal
 			// taking the lease mid-measurement (a Claude Code session in voice's checkout, during an omp x6) breaks both.
+			// This one climbs in a checkout of its own instead, and only this session follows it there.
+			let home = root;
 			if (!lease(root, ctx)) {
 				const busy = L.active(st).find(x => x.open);
-				return ctx.ui.notify(
-					`Another live session is climbing this checkout${busy?.open ? ` (${busy.open.id} open on ${busy.id})` : ""}. Climbs in one checkout share its tree and benchmarks: start this one in its own checkout (git worktree add <path> HEAD, then /climb there), or run /climb resume here to take the climb over.`,
-					"error",
-				);
+				try {
+					home = await ownCheckout(root, id);
+				} catch (e) {
+					return ctx.ui.notify(`Another live session is climbing this checkout, and ${(e as Error).message}`, "error");
+				}
+				away.set(root, home);
+				ctx.ui.notify(`Another live session is climbing ${root}${busy?.open ? ` (${busy.open.id} open on ${busy.id})` : ""}, so this goal climbs in its own checkout: ${home}. Edit and commit there.`, "info");
 			}
-			await ensureExcluded(root);
-			const id = X.slug(intent, new Set(st.goals.keys()));
-			append(root, { ts: L.now(), kind: "goal", goal: id, intent, cfg: { poke_max, beat_s }, harness });
-			if (st.paused) append(root, { ts: L.now(), kind: "resume", goal: "*" });
-			lease(root, ctx, true);
+			await ensureExcluded(home);
+			const fresh = load(home);
+			append(home, { ts: L.now(), kind: "goal", goal: id, intent, cfg: { poke_max, beat_s }, harness });
+			if (fresh.paused) append(home, { ts: L.now(), kind: "resume", goal: "*" });
+			mine.add(id);
+			lease(home, ctx, true);
 			ensureTimer(ctx);
-			const g = refresh(ctx, root).goals.get(id)!;
+			const g = refresh(ctx, home).goals.get(id)!;
 			ctx.ui.notify(`climb ${id} started · heartbeat every ${Math.round(beat_s / 60) || `${beat_s}s`}${beat_s >= 60 ? "m" : ""} · judge after ${poke_max} stale beats`, "info");
-			// Said on day one, not after hours of refused scorecards: climb measures commits and reverts drops here.
-			const d = await dirty(root);
-			if (d)
-				ctx.ui.notify(`climb: this checkout has uncommitted changes (${d.split("\n").length} files). If they are not this goal's, give the climb its own checkout: git worktree add <path> HEAD, then /climb move <path>.`, "warning");
 			pi.sendUserMessage(X.researchBrief(g));
 			await started(ctx);
 		},
@@ -2050,6 +2194,7 @@ interface ScorecardParams extends GoalParam {
 	frozen?: string[];
 	parked?: string[];
 	axioms?: string[];
+	own_checkout?: boolean;
 }
 interface ProbeParams extends GoalParam {
 	name: string;

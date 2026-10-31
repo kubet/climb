@@ -6,7 +6,9 @@
 //   - UserPromptSubmit runs /climb commands; PostToolUse and UserPromptSubmit hand Claude what the
 //     extension said since (omp delivers those mid-turn)
 //   - PreToolUse guards the ledger and the frozen instrument, keeps subagents off the climb tools,
-//     and holds edits while a measurement runs (Claude Code backgrounds long tool calls)
+//     and, while a measurement runs (Claude Code backgrounds long tool calls), refuses only changes to
+//     the checkout it measures
+//   - the extension says /climb (omp's and pi's command); everything this server sends says /climb:climb
 //   - Stop is session_stop: Claude cannot stop while a goal is open
 //   - the judge and the acceptance review are a separate headless `claude -p` with no tools
 import { spawn } from "node:child_process";
@@ -18,12 +20,11 @@ type Tool = { name: string; description: string; parameters: object; execute: (.
 type Handler = (e: unknown, ctx: unknown) => unknown;
 type HookOut = Record<string, unknown>;
 /** What the plugin's hooks pass to climb_hook (hooks/hooks.json): strings from the hook's input. */
-type HookIn = { event: string; prompt?: string; tool_name?: string; file_path?: string; notebook_path?: string; command?: string; agent_id?: string };
+type HookIn = { event: string; prompt?: string; tool_name?: string; file_path?: string; notebook_path?: string; command?: string; agent_id?: string; cwd?: string };
 
 const HOOK = "climb_hook";
 // Claude Code's file tools by the names the extension's guards know (omp's).
 const NAMES: Record<string, string> = { Bash: "bash", Write: "write", Edit: "edit", MultiEdit: "edit", NotebookEdit: "notebook" };
-const MUTATING = /^(Bash|Write|Edit|MultiEdit|NotebookEdit)$/;
 // A stdio tool call that says nothing for 30 minutes is aborted by Claude Code; one benchmark run can take longer.
 const KEEPALIVE_MS = 60_000;
 const SIDE_TURN_MS = 5 * 60_000;
@@ -172,9 +173,7 @@ async function hook(a: HookIn): Promise<HookOut> {
 			const name = a.tool_name ?? "";
 			if (ours(name) && name.endsWith(`__${HOOK}`)) return deny(`${HOOK} is the climb plugin's own hook channel, not a tool to call.`);
 			if (ours(name) && sub) return deny("climb tools belong to the main worker, not subagents. Report back to it instead.");
-			if (measuring && MUTATING.test(name))
-				return deny("climb is measuring: an edit or a command now would change what it measures. Wait for the climb tool's result (it arrives as a task notification), then go on.");
-			const input = Object.fromEntries(Object.entries({ file_path: a.file_path, notebook_path: a.notebook_path, command: a.command }).filter(([, v]) => given(v)));
+			const input = Object.fromEntries(Object.entries({ file_path: a.file_path, notebook_path: a.notebook_path, command: a.command, cwd: a.cwd }).filter(([, v]) => given(v)));
 			const r = await emit("tool_call", { toolName: NAMES[name] ?? name.toLowerCase(), input }, { ...ctx, agent: { kind: sub ? "sub" : "main" } });
 			return r?.block ? deny(r.reason ?? "blocked by climb") : {};
 		}
@@ -204,7 +203,11 @@ async function hook(a: HookIn): Promise<HookOut> {
 
 // --- MCP over stdio ---------------------------------------------------------------------------
 
-const send = (msg: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...msg })}\n`);
+/** Claude Code names the plugin's command /climb:climb; a bare /climb is "Unknown command" there. */
+const named = (s: string) => s.replace(/(^|[^\w:/.~-])\/climb(?![\w:/-])/g, "$1/climb:climb");
+const rename = (v: unknown): unknown =>
+	typeof v === "string" ? named(v) : Array.isArray(v) ? v.map(rename) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rename(x)])) : v;
+const send = (msg: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...(rename(msg) as object) })}\n`);
 const live = new Map<string | number, AbortController>();
 
 async function call(id: string | number, p: { name: string; arguments?: Record<string, unknown>; _meta?: { progressToken?: string | number } }) {
@@ -241,7 +244,7 @@ async function dispatch(m: { id?: string | number; method?: string; params?: Rec
 				// empty, or two climbs (omp's extension and this one) would drive one ledger.
 				if ((m.params?.clientInfo as { name?: string } | undefined)?.name === "claude-code") ready ??= start();
 				const asked = m.params?.protocolVersion as string;
-				return send({ id: m.id, result: { protocolVersion: VERSIONS.includes(asked) ? asked : VERSIONS.at(-1), capabilities: { tools: {} }, serverInfo: { name: "climb", version: "0.2.0" } } });
+				return send({ id: m.id, result: { protocolVersion: VERSIONS.includes(asked) ? asked : VERSIONS.at(-1), capabilities: { tools: {} }, serverInfo: { name: "climb", version: "0.3.1" } } });
 			}
 			case "ping":
 				return send({ id: m.id, result: {} });

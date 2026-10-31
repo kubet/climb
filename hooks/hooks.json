@@ -27,6 +27,7 @@
 							"file_path": "${tool_input.file_path}",
 							"notebook_path": "${tool_input.notebook_path}",
 							"command": "${tool_input.command}",
+							"cwd": "${cwd}",
 							"agent_id": "${agent_id}"
 						},
 						"timeout": 60

@@ -92,13 +92,17 @@ describe("Claude Code plugin", () => {
 			expect(busy.isError).toBe(true);
 			const paused = await s.hook({ event: "UserPromptSubmit", prompt: "/climb pause" });
 			expect(paused.hookSpecificOutput.additionalContext).toContain("climb paused");
+			// Claude Code knows the command as /climb:climb: a bare /climb is "Unknown command" there, and paths keep their names.
+			expect(paused.hookSpecificOutput.additionalContext).toContain("/climb:climb resume to continue");
+			expect(paused.hookSpecificOutput.additionalContext).not.toMatch(/(^|[^:\w])\/climb\s/);
+			expect(ledger.hookSpecificOutput.permissionDecisionReason).toContain("ledger (.climb/)");
 			expect((await s.hook({ event: "Stop" })).decision).toBeUndefined();
 		} finally {
 			s.close();
 		}
 	});
 
-	test("while a measurement runs in the background, edits and commands wait, and resting is no stop", async () => {
+	test("while a measurement runs in the background, only changes to its checkout wait; reading, research and work elsewhere go on; resting is no stop", async () => {
 		const s = setup("busy");
 		const hold = `${s.dir}-hold`;
 		try {
@@ -112,7 +116,12 @@ describe("Claude Code plugin", () => {
 			await Bun.sleep(300);
 			const edit = await s.hook({ event: "PreToolUse", tool_name: "Edit", file_path: path.join(s.dir, "work.txt") });
 			expect(edit.hookSpecificOutput.permissionDecisionReason).toContain("climb is measuring");
-			expect((await s.hook({ event: "PreToolUse", tool_name: "Read", file_path: path.join(s.dir, "work.txt") })).hookSpecificOutput).toBeUndefined();
+			const free = async (h: Record<string, string>) => (await s.hook({ event: "PreToolUse", ...h })).hookSpecificOutput;
+			expect(await free({ tool_name: "Read", file_path: path.join(s.dir, "work.txt") })).toBeUndefined();
+			expect(await free({ tool_name: "Write", file_path: path.join(os.tmpdir(), "draft.patch") })).toBeUndefined();
+			expect(await free({ tool_name: "Bash", command: "git log --oneline | head; grep -rn work . > /tmp/found.txt", cwd: s.dir })).toBeUndefined();
+			for (const command of ["git commit -qam x", "echo 1 > work.txt", `sed -i '' s/5/4/ ${s.dir}/work.txt`, "cd /tmp && git -C " + s.dir + " stash"])
+				expect([command, (await free({ tool_name: "Bash", command, cwd: s.dir }))?.permissionDecisionReason ?? "allowed"]).toEqual([command, expect.stringContaining("climb is measuring")]);
 			expect((await s.hook({ event: "Stop" })).decision).toBeUndefined();
 			fs.rmSync(hold);
 			expect(await measured).toContain("KEPT x1");

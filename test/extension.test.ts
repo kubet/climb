@@ -269,23 +269,27 @@ describe("climb extension", () => {
 		const other = host(dir, "main", "s2");
 		await other.load();
 		process.env.CLIMB_LEASE_ID = "other-process";
-		await expect(other.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another omp/pi session");
+		await expect(other.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another live session");
 		expect(await other.emit("session_stop")).toBeUndefined();
 		const t = L.clock.ms();
 		L.clock.ms = () => t + 61_000 + (Date.now() - t);
 		expect(await other.tool("climb_status", {})).toContain("climbing");
 		await other.cmd("resume");
 		delete process.env.CLIMB_LEASE_ID;
-		await expect(x.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another omp/pi session");
+		await expect(x.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another live session");
 		await x.cmd("resume"); // take it back explicitly
 		process.env.CLIMB_LEASE_ID = "other-process";
-		await expect(other.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another omp/pi session");
-		// Nor does a new goal take a live driver's checkout: it is told to climb in its own checkout.
+		await expect(other.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another live session");
+		// Nor does a new goal take a live driver's checkout: it climbs in a checkout of its own, and only its session follows it.
 		const goals = state().goals.size;
 		await other.cmd("make it faster too");
-		expect(other.notes.at(-1)).toContain("Another live session is climbing this checkout");
+		const own = `${fs.realpathSync(dir)}-climb`;
+		expect(other.notes.some(n => n.includes("so this goal climbs in its own checkout") && n.includes(own))).toBe(true);
 		expect(state().goals.size).toBe(goals);
+		expect(L.fold(L.read(own)).goals.has("g-make-it-faster-too")).toBe(true);
+		expect(await other.tool("climb_status", {})).toContain("g-make-it-faster-too");
 		delete process.env.CLIMB_LEASE_ID;
+		await sh(`git worktree remove --force ${own}`);
 	});
 
 	test("stop-hook valve: a worker that stops twice without working gets the judge, not a nap", async () => {
@@ -699,7 +703,7 @@ describe("lessons from the night", () => {
 		fs.writeFileSync(path.join(d, ".climb/lease.json"), JSON.stringify({ who: `${os.hostname()}:999999`, ts: L.clock.ms() }));
 		expect(await z.tool("climb_probe", { name: "w", cmd: "cat work.txt" })).toContain("= 100");
 		fs.writeFileSync(path.join(d, ".climb/lease.json"), JSON.stringify({ who: `${os.hostname()}:${process.ppid}`, ts: L.clock.ms() }));
-		await expect(z.tool("climb_probe", { name: "w", cmd: "cat work.txt" })).rejects.toThrow("Another omp/pi session");
+		await expect(z.tool("climb_probe", { name: "w", cmd: "cat work.txt" })).rejects.toThrow("Another live session");
 		fs.rmSync(path.join(d, ".climb/lease.json"));
 	});
 
@@ -1082,28 +1086,98 @@ describe("paired measurement, crashed", () => {
 });
 
 describe("move", () => {
-	test("a climb in a shared, dirty checkout says so on day one and moves to a clean worktree with its ledger", async () => {
-		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-move-"));
-		const wt = `${d}-wt`;
+	const repo = async (d: string, extra = "") => {
 		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		await run(`git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && echo a > other.txt && git add -A && git commit -qm init${extra}`);
+		return run;
+	};
+	const card = (cmd = "cat work.txt") => ({ metrics: [{ name: "w", cmd, dir: "down" as const, target: 50, noise: 0.05 }] });
+
+	test("a climb in a checkout dirtied by other work moves to its own checkout, no restart, and a restarted session follows it", async () => {
+		const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-move-")));
+		const own = `${d}-climb`;
+		const run = await repo(d, " && echo edited > other.txt && mkdir -p node_modules/dep && echo x > node_modules/dep/i.js && echo node_modules > .gitignore && git add .gitignore && git commit -qm ignore");
 		try {
-			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && echo a > other.txt && git add -A && git commit -qm init && echo edited > other.txt");
 			const z = host(d, "main", "move");
 			await z.load();
 			await z.cmd("shrink work");
-			expect(z.notes.some(n => n.includes("uncommitted changes (1 files)") && n.includes("/climb move"))).toBe(true);
-			await expect(z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "cat work.txt", dir: "down", target: 50 }] })).rejects.toThrow("/climb move <path>");
+			await expect(z.tool("climb_scorecard", card())).rejects.toThrow("own_checkout: true");
+			const out = await z.tool("climb_scorecard", { ...card(), own_checkout: true });
+			expect(out).toContain("Scorecard set");
+			expect(out).toContain(`g-shrink-work now climbs in ${own}`);
+			// The other work is untouched; the goal left this checkout's ledger, and the dependencies came along.
+			expect(fs.readFileSync(path.join(d, "other.txt"), "utf8").trim()).toBe("edited");
+			expect(L.active(L.fold(L.read(d)))).toHaveLength(0);
+			expect(L.fold(L.read(own)).goals.get("g-shrink-work")?.card).toBeDefined();
+			expect(fs.existsSync(path.join(own, "node_modules/dep/i.js"))).toBe(true);
+			expect((await run(`git -C ${own} branch --show-current`)).stdout.trim()).toBe("climb/g-shrink-work");
+			// The same session climbs there at once: an experiment commits in its own checkout.
+			await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" });
+			await run(`echo 80 > ${own}/work.txt && git -C ${own} commit -qam trim`);
+			expect(await z.tool("climb_measure", {})).toContain("KEPT x1");
+			// After a restart in the old checkout the climb is followed there, not lost.
+			const y = host(d, "main", "move-restart");
+			await y.load();
+			expect(await y.tool("climb_status", {})).toContain("g-shrink-work");
+		} finally {
+			await run(`git worktree remove --force ${own}`).catch(() => {});
+			fs.rmSync(own, { recursive: true, force: true });
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	test("a goal whose metrics cd into another repo climbs in that repo, though the session's own checkout is dirty", async () => {
+		const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-home-")));
+		const design = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-design-")));
+		const run = await repo(d, " && echo edited > other.txt");
+		await repo(design);
+		try {
+			const z = host(d, "main", "home");
+			await z.load();
+			await z.cmd("shrink the design");
+			const out = await z.tool("climb_scorecard", card(`cd ${design} && cat work.txt`));
+			expect(out).toContain(`now climbs in ${design}`);
+			expect(L.fold(L.read(design)).goals.get("g-shrink-the-design")?.card).toBeDefined();
+			expect(L.active(L.fold(L.read(d)))).toHaveLength(0);
+			expect(fs.readFileSync(path.join(d, "other.txt"), "utf8").trim()).toBe("edited");
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(design, { recursive: true, force: true });
+		}
+		void run;
+	});
+
+	test("an unnamed goal is the one this session started, not one another session left behind", async () => {
+		const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-mine-")));
+		await repo(d);
+		try {
+			const old = host(d, "main", "old");
+			await old.load();
+			await old.cmd("an old goal");
+			const y = host(d, "main", "new");
+			await y.load();
+			await y.cmd("shrink work");
+			expect(await y.tool("climb_probe", { name: "w", cmd: "cat work.txt" })).toContain("Probe w = 100");
+			expect(L.fold(L.read(d)).goals.get("g-shrink-work")!.probes).toHaveLength(1);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	test("/climb move carries the climb to a clean checkout and the session climbs there at once", async () => {
+		const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "climb-mv-")));
+		const wt = `${d}-wt`;
+		const run = await repo(d, " && echo edited > other.txt");
+		try {
+			const z = host(d, "main", "mv");
+			await z.load();
+			await z.cmd("shrink work");
 			await run(`git worktree add -q ${wt} HEAD`);
 			await z.cmd(`move ${wt}`);
-			expect(z.notes.at(-1)).toContain(`climb moved to ${fs.realpathSync(wt)}`);
+			expect(z.notes.at(-1)).toContain(`climb moved to ${wt}: this session climbs there now, no restart`);
 			expect(L.fold(L.read(d)).paused).toBe(true);
-			const there = L.fold(L.read(wt));
-			expect([...there.goals.keys()]).toEqual(["g-shrink-work"]);
-			expect(there.paused).toBeFalsy();
-			const y = host(wt, "main", "move-wt");
-			await y.load();
-			expect(await y.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "cat work.txt", dir: "down", target: 50, noise: 0.05 }] })).toContain("Scorecard set");
-			expect(fs.readFileSync(path.join(d, "other.txt"), "utf8").trim()).toBe("edited");
+			expect(await z.tool("climb_scorecard", card())).toContain("Scorecard set");
+			expect(L.fold(L.read(wt)).goals.get("g-shrink-work")?.card).toBeDefined();
 		} finally {
 			await run(`git worktree remove --force ${wt}`).catch(() => {});
 			fs.rmSync(wt, { recursive: true, force: true });

@@ -96,6 +96,27 @@ describe("logic", () => {
 	});
 });
 
+describe("what a command touches", () => {
+	const root = "/r/repo";
+	const ch = (cmd: string, cwd = root) => X.changesTree(cmd, root, cwd, "/home/u");
+	test("tree-changing git verbs and writes into the checkout change it; reads and writes elsewhere do not", () => {
+		for (const c of ["git commit -qam x", "git stash push src/a.ts", "git -C /r/repo checkout -- a", "echo 1 > a.txt", "cat x >> /r/repo/b", "rm -rf build/x", "sed -i '' s/a/b/ src/a.ts", "cp /tmp/p src/a.ts", "sudo mv a b", "cd src && tee out.txt"])
+			expect([c, ch(c)]).toEqual([c, true]);
+		for (const c of ["git log --oneline | head", "git status --short; git diff", "git stash list", "grep -rn x . > /tmp/found", "cat a.txt 2>/dev/null", "bun test 2>&1 | tail", "cp src/a.ts /tmp/a", "cd /tmp && echo 1 > a.txt", "git -C /other commit -m x", "python3 bench.py --out /tmp/r.json"])
+			expect([c, ch(c)]).toEqual([c, false]);
+		// From another directory, relative writes land there.
+		expect(ch("echo 1 > a.txt", "/tmp")).toBe(false);
+		expect(ch("cd /r/repo && echo 1 > a.txt", "/tmp")).toBe(true);
+	});
+	test("the directory an instrument cds into, when every command agrees", () => {
+		expect(X.cdInto(["cd /a/design && bash run.sh", "cd /a/design; python x.py"], "/h")).toBe("/a/design");
+		expect(X.cdInto(["cd ~/dev/d && make"], "/h")).toBe("/h/dev/d");
+		expect(X.cdInto(["cd /a && x", "cd /b && y"], "/h")).toBeUndefined();
+		expect(X.cdInto(["bash run.sh"], "/h")).toBeUndefined();
+		expect(X.cdInto(["cd src && make"], "/h")).toBeUndefined();
+	});
+});
+
 describe("ledger fold", () => {
 	const nowMs = Date.parse("2026-10-28T12:00:00Z");
 	const base = (): L.Entry[] => [
@@ -264,6 +285,26 @@ describe("ledger fold", () => {
 		entries.push({ ts: iso(1e6, nowMs), kind: "beat", goal: "g", head: "c", values: { ms: 40 }, progress: true, stale: 0 });
 		g = L.fold(entries).goals.get("g")!;
 		expect(L.stuck(g)).toBe(false);
+	});
+
+	test("a STUCK verdict holds until something moves after it: research from before it is no progress at the next beat", () => {
+		const fresh = (): L.Entry[] => [
+			{ ts: iso(5e6, nowMs), kind: "goal", goal: "g", intent: "fast", cfg: { poke_max: 3, beat_s: 1800 } },
+			{ ts: iso(4.5e6, nowMs), kind: "beat", goal: "g", head: "c", progress: false, stale: 1 },
+			{ ts: iso(4e6, nowMs), kind: "probe", goal: "g", name: "jury", cmd: "x", value: 6.9 },
+			{ ts: iso(3e6, nowMs), kind: "judge", goal: "g", by: "judge", verdict: "stuck", diagnosis: "the operator must act", next: "ask" },
+		];
+		const st = L.fold(fresh());
+		expect(L.stuck(st.goals.get("g")!)).toBe(true);
+		expect(L.treeProgressSinceBeat(st, st.goals.get("g")!)).toBe(false);
+		const later = L.fold([...fresh(), { ts: iso(2e6, nowMs), kind: "probe", goal: "g", name: "jury2", cmd: "y", value: 7.1 }]);
+		expect(L.treeProgressSinceBeat(later, later.goals.get("g")!)).toBe(true);
+	});
+
+	test("a moved goal is no longer active where it left", () => {
+		const st = L.fold([...base(), { ts: iso(1e6, nowMs), kind: "moved", goal: "g", to: "/elsewhere" }]);
+		expect(L.active(st)).toHaveLength(0);
+		expect(st.goals.get("g")!.moved).toBe("/elsewhere");
 	});
 
 	test("three drops in a row on any levers block until a judge; a kept result resets", () => {

@@ -1,4 +1,5 @@
 // Pure decision + presentation logic. No I/O.
+import { resolve as pathResolve } from "node:path";
 import {
 	type Entry,
 	type Goal,
@@ -217,7 +218,7 @@ export function statusLine(st: State, nowMs = clock.ms()): string | undefined {
 }
 
 export function report(st: State, nowMs = clock.ms()): string {
-	const top = [...st.goals.values()].filter(g => !g.parent && (!g.done || nowMs - epoch(g.done.ts) < 86_400_000));
+	const top = [...st.goals.values()].filter(g => !g.parent && !g.moved && (!g.done || nowMs - epoch(g.done.ts) < 86_400_000));
 	if (!top.length) return "No goals. Start one: /climb <intent>";
 	const out: string[] = [];
 	if (st.paused) out.push("PAUSED — /climb resume to continue");
@@ -403,6 +404,59 @@ export function writesLedger(cmd: string, dir: string): boolean {
 	});
 }
 
+const unquote = (w: string) => w.replace(/^(["'])(.*)\1$/, "$2");
+const GIT_WRITES = /^(commit|checkout|switch|stash|reset|merge|rebase|cherry-pick|revert|restore|apply|am|pull|clean|rm|mv)$/;
+const WRITERS = /^(rm|mv|cp|tee|touch|truncate|dd|install|ln|chmod|chown|mkdir|rmdir|patch|rsync|unzip)$/;
+
+/** Whether a shell command, run from `cwd`, changes the files of checkout `root`: git's tree-changing
+ *  verbs there, or a write (redirect, rm/mv/cp/tee/…, sed -i) whose target lies inside it. Reads, and
+ *  writes elsewhere (a scratch file, another repo), do not. `home` expands ~; `real` resolves symlinks
+ *  (/var is /private/var), so a path is compared as git names the checkout. */
+export function changesTree(cmd: string, root: string, cwd: string, home: string, real: (p: string) => string = p => p): boolean {
+	let at = cwd;
+	const abs = (p: string) => real(pathResolve(at, unquote(p).replace(/^~(?=\/|$)/, home)));
+	const inside = (p: string) => {
+		const a = abs(p);
+		return a === root || a.startsWith(`${root}/`);
+	};
+	for (const part of cmd.split(/&&|\|\||[;|\n]/)) {
+		const redirects = [...part.matchAll(/(?<![<&])\d?>{1,2}\|?\s*([^\s&|;<>()]+)/g)].map(m => m[1]).filter(t => t !== "/dev/null" && !t.startsWith("&"));
+		if (redirects.some(inside)) return true;
+		const words = part.replace(/\d?>{1,2}\|?\s*[^\s&|;<>()]+/g, " ").trim().split(/\s+/).filter(Boolean).map(unquote);
+		while (words.length && (/^\w+=/.test(words[0]) || words[0] === "sudo" || words[0] === "command")) words.shift();
+		const [w0, ...args] = words;
+		if (!w0) continue;
+		const files = args.filter(a => !a.startsWith("-"));
+		if (w0 === "cd") {
+			at = files[0] ? abs(files[0]) : home;
+			continue;
+		}
+		if (w0 === "git") {
+			let dir = at;
+			let i = 0;
+			for (; i < args.length && args[i].startsWith("-"); i++) {
+				if (args[i] === "-C") dir = abs(args[++i] ?? ".");
+				else if (args[i] === "-c") i++;
+			}
+			const verb = args[i];
+			const sub = args[i + 1];
+			if (verb && GIT_WRITES.test(verb) && !(verb === "stash" && /^(list|show)$/.test(sub ?? "")) && (dir === root || dir.startsWith(`${root}/`))) return true;
+			continue;
+		}
+		const targets = /^(cp|install|ln|rsync)$/.test(w0) ? files.slice(-1) : w0 === "dd" ? args.filter(a => a.startsWith("of=")).map(a => a.slice(3)) : files;
+		if (WRITERS.test(w0) && targets.some(inside)) return true;
+		if (/^(sed|perl)$/.test(w0) && args.some(a => /^-\w*i/.test(a)) && files.slice(w0 === "sed" ? 1 : 0).some(inside)) return true;
+	}
+	return false;
+}
+
+/** The directory every command starts by cd-ing into (absolute, or ~/), when they all agree: the
+ *  checkout their instrument lives in, which may not be the session's. */
+export function cdInto(cmds: string[], home: string): string | undefined {
+	const dirs = cmds.map(c => /^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(&&|;)/.exec(c)?.[1]).map(d => d && unquote(d).replace(/^~(?=\/|$)/, home).replace(/\/+$/, ""));
+	return dirs.length && dirs.every(d => d?.startsWith("/") && d === dirs[0]) ? dirs[0] : undefined;
+}
+
 /** Tracked files a command executes (scripts after an interpreter or test runner,
  *  or invoked as ./path): the instrument, frozen automatically. Plain data reads
  *  like `cat out.txt` or `wc -l < src.py` are the thing being optimized, not frozen. */
@@ -480,6 +534,8 @@ export function describe(e: Entry): string {
 			return `${g} rolled up ${e.n} heartbeats`;
 		case "learn":
 			return `${g} learned (${e.type}): ${e.text}${e.evidence ? ` [${e.evidence}]` : ""}`;
+		case "moved":
+			return `${g} moved to ${e.to}`;
 	}
 }
 

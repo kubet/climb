@@ -230,7 +230,7 @@ function verdict(st: State, root: Goal, now: number): { headline: string; lede: 
 }
 
 export function render(st: State, data: Data, s: Summary, nowMs: number): string {
-	const roots = [...st.goals.values()].filter(g => !g.parent && (!g.done || nowMs - epoch(g.done.ts) < 86_400_000));
+	const roots = [...st.goals.values()].filter(g => !g.parent && !g.moved && (!g.done || nowMs - epoch(g.done.ts) < 86_400_000));
 	const sections = roots
 		.map(root => {
 			const v = verdict(st, root, nowMs);

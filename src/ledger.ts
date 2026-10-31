@@ -112,7 +112,10 @@ export interface RollupE extends Base { kind: "rollup"; cd: number; n: number; f
 export type LearnKind = "fact" | "trap" | "dead-end";
 export interface LearnE extends Base { kind: "learn"; type: LearnKind; text: string; evidence?: string }
 
-export type Entry = GoalE | CardE | ExpE | ResultE | BeatE | StallE | ProbeE | JudgeE | DoneE | PauseE | RollupE | LearnE;
+/** The goal climbs in another checkout from here on (its instrument lives there, or this one is shared and dirty). */
+export interface MovedE extends Base { kind: "moved"; to: string }
+
+export type Entry = GoalE | CardE | ExpE | ResultE | BeatE | StallE | ProbeE | JudgeE | DoneE | PauseE | RollupE | LearnE | MovedE;
 
 export interface Point {
 	t: number;
@@ -164,6 +167,8 @@ export interface Goal {
 	workSeq: number;
 	seq: number;
 	done?: DoneE;
+	/** The checkout this goal moved to: it is no longer climbed here. */
+	moved?: string;
 	series: Map<string, Point[]>;
 	nextExp: number;
 }
@@ -366,12 +371,15 @@ export function fold(entries: Entry[]): State {
 			case "learn":
 				g.learned.push(e);
 				break;
+			case "moved":
+				g.moved = e.to;
+				break;
 		}
 	}
 	return st;
 }
 
-export const active = (st: State) => [...st.goals.values()].filter(g => !g.done);
+export const active = (st: State) => [...st.goals.values()].filter(g => !g.done && !g.moved);
 
 // --- decomposition: a goal can be split into parts, each a goal with its own scorecard ---
 export const parts = (st: State, g: Goal): Goal[] => g.children.map(id => st.goals.get(id)).filter((c): c is Goal => !!c);
@@ -414,7 +422,8 @@ const researched = (g: Goal, since: number) => (!g.card && g.lastProbeSeq > sinc
 export const progressSinceBeat = (g: Goal) => keptSinceBeat(g) || researched(g, g.lastBeat?.seq ?? g.seq);
 /** The same over a root and all its parts, measured from the root's last beat. */
 export function treeProgressSinceBeat(st: State, root: Goal): boolean {
-	const since = root.lastBeat?.seq ?? root.seq;
+	// A STUCK verdict holds until something moves after it: research from before it released it at the next beat.
+	const since = Math.max(root.lastBeat?.seq ?? root.seq, stuck(root) ? root.judgeSeq : -1);
 	return subtree(st, root).some(g => g.lastKeptSeq > since || researched(g, since));
 }
 export const judgedSinceBeat = (g: Goal) => g.judgeSeq > (g.lastBeat?.seq ?? g.seq);
