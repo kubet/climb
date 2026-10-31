@@ -95,8 +95,35 @@ export const t975 = (dof: number) => [Number.POSITIVE_INFINITY, 12.71, 4.3, 3.18
 
 /** Control and candidate measured back to back (A B, B A, ...) cancel drift: decide on the median paired
  *  gain, with noise from the spread of the pairs themselves (floor 1%). */
+/** Pair gains that land in two clusters far apart (each a quarter of them or more), not along the pairs' order:
+ *  their median flips between the clusters and no interval around it holds. Platinum's jury split around 25 and 72
+ *  by which side a design sat on. Clusters that follow the order (A B, then B A) are drift, which pairing cancels. */
+export function twoModes(xs: number[]): [number, number] | undefined {
+	if (xs.length < 6) return undefined;
+	const s = [...xs].sort((a, b) => a - b);
+	let at = -1;
+	let gap = 0;
+	for (let i = Math.ceil(s.length / 4) - 1; i < Math.floor((3 * s.length) / 4); i++)
+		if (s[i + 1] - s[i] > gap) {
+			gap = s[i + 1] - s[i];
+			at = i;
+		}
+	if (at < 0) return undefined;
+	const spread = (v: number[]) => {
+		const mu = v.reduce((a, b) => a + b, 0) / v.length;
+		return Math.sqrt(v.reduce((a, b) => a + (b - mu) ** 2, 0) / Math.max(1, v.length - 1));
+	};
+	const lo = s.slice(0, at + 1);
+	const hi = s.slice(at + 1);
+	if (gap <= 4 * Math.max(spread(lo), spread(hi), 0.01)) return undefined;
+	const cut = (s[at] + s[at + 1]) / 2;
+	const high = xs.map(x => x > cut);
+	const byOrder = high.every((h, i) => h === (i % 2 === 1)) || high.every((h, i) => h === (i % 2 === 0));
+	return byOrder ? undefined : [median(lo), median(hi)];
+}
+
 export function pairedVerdict(metrics: Metric[], pairs: Record<string, [number, number][]>, plain?: { ref: Values; values: Values }) {
-	const stats: Record<string, { gain: number; noise: number; n: number }> = {};
+	const stats: Record<string, { gain: number; noise: number; n: number; modes?: [number, number] }> = {};
 	for (const m of metrics) {
 		const ps = pairs[m.name] ?? [];
 		// Metrics that were sure enough not to need pairs keep their plain comparison.
@@ -110,9 +137,15 @@ export function pairedVerdict(metrics: Metric[], pairs: Record<string, [number, 
 		const mean = gains.reduce((s, x) => s + x, 0) / n;
 		const sd = n > 1 ? Math.sqrt(gains.reduce((s, x) => s + (x - mean) ** 2, 0) / (n - 1)) : 0;
 		// Few pairs estimate their own spread badly: Student's t, not 2, keeps false keeps near 2.5% a side.
-		stats[m.name] = { gain: median(gains), noise: Math.max(0.01, (t975(n - 1) * 1.2533 * sd) / Math.sqrt(n)), n };
+		// Two clusters decide nothing either way: the metric neither improved nor regressed.
+		const modes = twoModes(gains);
+		stats[m.name] = { gain: median(gains), noise: modes ? Number.POSITIVE_INFINITY : Math.max(0.01, (t975(n - 1) * 1.2533 * sd) / Math.sqrt(n)), n, modes };
 	}
-	const fmt = (k: string) => `${k} ${stats[k].gain >= 0 ? "+" : ""}${(stats[k].gain * 100).toFixed(1)}% ±${(stats[k].noise * 100).toFixed(1)}%${stats[k].n ? "" : " (unpaired)"}`;
+	const pct = (x: number) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
+	const fmt = (k: string) =>
+		stats[k].modes
+			? `${k} lands in two clusters (${pct(stats[k].modes![0])} and ${pct(stats[k].modes![1])} over ${stats[k].n} pairs): its instrument reads one of two values, so no call can be made`
+			: `${k} ${pct(stats[k].gain)} ±${(stats[k].noise * 100).toFixed(1)}%${stats[k].n ? "" : " (unpaired)"}`;
 	const names = Object.keys(stats);
 	// A hold tolerates what its scorecard set; pairs only make the call surer, never stricter than that.
 	const tolerance = (k: string) => Math.max(stats[k].noise, metrics.find(m => m.name === k)?.hold ? (metrics.find(m => m.name === k)?.noise ?? 0) : 0);
@@ -131,7 +164,7 @@ export const PAIRS = 6;
  *  (3 pairs of a noisy jury read ±69% where 6 would read ±29%). */
 export function pairNoiseAt(m: Metric, ps: [number, number][], n = PAIRS): number {
 	const gains = ps.map(([a, b]) => gain(m, a, b));
-	if (gains.length < 2) return Number.POSITIVE_INFINITY;
+	if (gains.length < 2 || twoModes(gains)) return Number.POSITIVE_INFINITY;
 	const mean = gains.reduce((x, y) => x + y, 0) / gains.length;
 	const sd = Math.sqrt(gains.reduce((x, y) => x + (y - mean) ** 2, 0) / (gains.length - 1));
 	return Math.max(0.01, (t975(n - 1) * 1.2533 * sd) / Math.sqrt(n));

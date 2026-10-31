@@ -1150,6 +1150,37 @@ describe("a streak of proof keeps", () => {
 			fs.rmSync(d, { recursive: true, force: true });
 		}
 	});
+
+	test("a streak no instrument can check is not kept on its proofs: even 20 pairs too wide to see a slide", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-blind-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			// An instrument steady on this tree and two-valued on the streak's starting tree (70, 70, 130, 130, ...): no step looks
+			// worse, and no number of pairs can tell whether the streak slid.
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "blind");
+			await z.load();
+			await z.cmd("design it");
+			const st = path.join(os.tmpdir(), `climb-blind-n-${process.pid}`);
+			fs.writeFileSync(st, "0");
+			const cmd = `case "$PWD" in *climb-base-*) n=$(cat ${st}); echo $((n+1)) > ${st}; if [ $((n / 2 % 2)) = 0 ]; then echo 70; else echo 130; fi;; *) echo 100;; esac`;
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd, dir: "down", target: 10, noise: 0.05 }] });
+			const step = async (i: number) => {
+				await run(`echo 'test -f fix${i}' > check${i}.sh && git add check${i}.sh && git commit -qm check${i}`);
+				await z.tool("climb_experiment", { lever: `fix ${i}`, hypothesis: "", prediction: "", proof: `bash check${i}.sh` });
+				await run(`touch fix${i} && git add -A && git commit -qm fix${i}`);
+				return z.tool("climb_measure", {});
+			};
+			await step(1);
+			await step(2);
+			const third = await step(3);
+			expect(third).toContain("DROPPED x3");
+			expect(third).toContain("nothing can check the 3 proof keeps since");
+			fs.rmSync(st, { force: true });
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("a faster loop", () => {

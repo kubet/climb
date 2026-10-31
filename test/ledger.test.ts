@@ -105,6 +105,20 @@ describe("pairs that already decide", () => {
 		expect(X.settled(m, [[100, 50], [101, 52]])).toBe(false);
 		expect(X.settled(metric({ hold: true, noise: 0.2 }), [[100, 100], [101, 101], [99, 99.5]])).toBe(true);
 	});
+	test("pairs in two clusters (a side-biased jury) decide nothing; clusters along the A B / B A order are drift", () => {
+		const sided = [0.4, 0.42, -0.4, 0.41, -0.38, -0.41, -0.39, 0.4];
+		expect(X.twoModes(sided)).toBeDefined();
+		const m = metric({ name: "pref", dir: "up", baseline: 50, target: 70 });
+		const ps: [number, number][] = sided.map(g => [50, 50 * (1 + g)]);
+		const v = X.pairedVerdict([m], { pref: ps });
+		expect(v.kept).toBe(false);
+		expect(v.regressed).toBe(false);
+		expect(v.reason).toContain("lands in two clusters");
+		// Linear drift under A B, B A alternates the sign with the order: pairing cancels it, it is no instrument fault.
+		expect(X.twoModes([-0.1, 0.077, -0.071, 0.059, -0.056, 0.048])).toBeUndefined();
+		expect(X.twoModes([0.05, 0.051, 0.049, 0.052, 0.05, 0.048])).toBeUndefined();
+	});
+
 	test("an instrument is judged by what the most pairs it may get would show, not by 3 (platinum's x2)", () => {
 		const m = metric({ name: "pref", dir: "up", baseline: 50, target: 70 });
 		const x2: [number, number][] = [[42, 53.8], [38.2, 47.8], [47.5, 42]];

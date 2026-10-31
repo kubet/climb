@@ -29,6 +29,8 @@ const DIRECT = " Call it directly, not from eval or a script: measuring can outl
 const RESUMES = " The runs it finished count: climb_measure resumes from them.";
 // An instrument that keeps outputs per run (voice's call recordings: 9 GB a day) fills a disk over nights of measuring.
 const DISK_MIN = 2 * 2 ** 30;
+/** The most pairs a streak check takes to see a slide. */
+const SLIDE_PAIRS = 20;
 /** Free bytes on a directory's disk (replaceable, like L.clock, for tests). */
 /** A failed run (a crash, or no number: an API that rate-limited or blipped) is retried once, after a pause: an instant
  *  retry hits the same outage (voice's control failed when its router bench printed NaN three times in a row). */
@@ -519,7 +521,8 @@ export default async function climb(pi: ExtensionAPI) {
 	 *  first run fails); a string when a later run failed even on a retry: one bad run must not throw the
 	 *  pairs away and leave the decision to a single draw. With `since` (an open experiment's start), pairs
 	 *  finished since then count: a measurement that was cut off resumes, and a retry cannot re-roll them. */
-	async function paired(root: string, base: string, metrics: L.Metric[], goal: string, signal?: AbortSignal, progress?: Progress, since?: number): Promise<Record<string, [number, number][]> | string | undefined> {
+	/** `cap`: the most pairs a metric gets (a streak check pairs until it can see a slide). */
+	async function paired(root: string, base: string, metrics: L.Metric[], goal: string, signal?: AbortSignal, progress?: Progress, since?: number, cap: number = X.PAIRS): Promise<Record<string, [number, number][]> | string | undefined> {
 		const [baseTree, candTree] = await Promise.all([tree(root, base), tree(root)]);
 		const traces = since === undefined ? [] : T.read(root);
 		try {
@@ -530,7 +533,7 @@ export default async function climb(pi: ExtensionAPI) {
 				for (const m of metrics) {
 					// A close call gets every pair it may; a clear one stops at 3 (settled). Pairing only samples+2 times left a
 					// noisy jury 3 pairs: platinum's x2 read +28%, +25%, -12% and was dropped at ±69%, where 6 would read ±29%.
-					const n = X.PAIRS;
+					const n = cap;
 					const ps = since !== undefined && baseTree && candTree ? T.pairsOf(traces, goal, m.name, cmdId(m.cmd), baseTree, candTree, since).slice(0, n) : [];
 					if (ps.length) T.append(root, { ts: L.now(), kind: "reuse", phase: "paired", goal, metric: m.name, runs: 2 * ps.length });
 					// Three pairs that already decide with room to spare end it: the rest could not change the call.
@@ -1956,17 +1959,26 @@ export default async function climb(pi: ExtensionAPI) {
 				// measured in pairs against where the streak started; a slide beyond noise stops it, a pass starts a new streak.
 				const anchor = byProof ? X.streakAnchor(g) : undefined;
 				if (anchor && anchor.n + 1 >= X.STREAK) {
-					const sp = await paired(root, anchor.head, g.card.metrics, g.id, signal, t => say(t && `the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)}, in pairs: ${t}`));
+					// A slide is a loss beyond the scorecard's own noise, the bar one step's regression faces. The check pairs
+					// until it settles (clearly slid, or clearly not), up to SLIDE_PAIRS: a 6-pair check of a ±28% jury proved
+					// nothing, and its "hold" let platinum's preference slide from 50 to ~38 over ten keeps.
+					const held = g.card.metrics.map(m => ({ ...m, hold: true }));
+					const sp = await paired(root, anchor.head, held, g.id, signal, t => say(t && `the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)}, in pairs: ${t}`), undefined, SLIDE_PAIRS);
 					if (typeof sp === "string") throw new Error(`The check of the streak of proof keeps against ${anchor.head.slice(0, 8)} failed; nothing was decided and ${exp.id} stays open:\n${sp}\nFlaky: call climb_measure again.`);
 					if (sp) {
-						// A slide is one beyond the metric's own noise: every metric is held, as a hold metric is, to its tolerance.
-						const sv = X.pairedVerdict(eff.metrics.map(m => ({ ...m, hold: true })), sp);
+						const sv = X.pairedVerdict(held, sp);
+						// Blind: its interval is wider than the slide it must see. A tight interval near the edge is a call, not blindness.
+						const blind = held.filter(m => sp[m.name]?.length && sv.stats[m.name] && sv.stats[m.name].noise > m.noise);
+						const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 						if (sv.regressed) {
 							kept = byProof = false;
 							reason += `; but the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)} slid together: ${sv.reason.replace(/^regressed, /, "")}. Each passed against the step before; together they are worse. Drop this one, and undo or rethink the slide, or accept it by re-baselining with climb_scorecard`;
+						} else if (blind.length) {
+							kept = byProof = false;
+							reason += `; but nothing can check the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)}: ${blind.map(m => (sv.stats[m.name].modes ? `${m.name}'s ${sv.stats[m.name].n} pairs land in two clusters (${pct(sv.stats[m.name].modes![0])} and ${pct(sv.stats[m.name].modes![1])}), so its instrument reads one of two values` : `even ${sv.stats[m.name].n} pairs leave ${m.name} at ±${pct(sv.stats[m.name].noise)}, wider than the ±${pct(m.noise)} slide it must see`)).join("; ")}. A proof keeps a change only where a regression would show, and none would here. Steady the instrument (more judgments per run, sides shuffled) or take the open choices to the user`;
 						} else {
 							streakChecked = anchor.head;
-							reason += `; the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)} hold against it in pairs`;
+							reason += `; the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)} hold against it in pairs, to within ${held.map(m => `±${pct(m.noise)} ${m.name}`).join(", ")}`;
 						}
 					}
 				}
