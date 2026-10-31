@@ -1268,6 +1268,18 @@ export default async function climb(pi: ExtensionAPI) {
 					block: true,
 					reason: `climb is measuring ${root} right now: a change there would be measured with it. Reading, research and work outside it go on; draft the next change in a scratch file and apply it once the result arrives.`,
 				};
+			// A second run of the instrument itself (voice's worker ran its call bench by hand on another port) loads the
+			// machine and the APIs the measurement runs on: it waits. Tests, proofs and other scripts do not.
+			if (root && event.toolName === "bash") {
+				const cards = L.active(load(root)).flatMap(g => (g.card ? [g.card] : []));
+				const scripts = new Set(cards.flatMap(c => c.metrics.flatMap(m => X.instrumentFiles(m.cmd, new Set(c.frozen ?? [])))));
+				const again = X.instrumentFiles(String(at0.command ?? ""), scripts);
+				if (again.length)
+					return {
+						block: true,
+						reason: `climb is measuring with ${again.join(", ")} right now: another run of it would load the machine and the services it measures, and the numbers being decided would carry that. Run it once the result arrives; until then, read, research or prepare the next change.`,
+					};
+			}
 		}
 		if (X.namesDir(input, L.DIR)) {
 			// The edit's target, not its text: a test or a doc that mentions the ledger is not the ledger. A patch names its files inside.

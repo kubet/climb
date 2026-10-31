@@ -152,7 +152,8 @@ describe("Claude Code plugin", () => {
 		try {
 			await s.ready;
 			await s.hook({ event: "UserPromptSubmit", prompt: "/climb shrink work" });
-			await s.text("climb_scorecard", { metrics: [{ name: "work", cmd: `while [ -f ${hold} ]; do sleep 0.05; done; cat work.txt`, dir: "down", target: 10, noise: 0.05 }] });
+			s.sh(`printf 'while [ -f ${hold} ]; do sleep 0.05; done; cat work.txt\n' > bench.sh && git add bench.sh && git commit -qm bench`);
+			await s.text("climb_scorecard", { metrics: [{ name: "work", cmd: "bash bench.sh", dir: "down", target: 10, noise: 0.05 }] });
 			await s.text("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" });
 			s.sh("echo 50 > work.txt && git commit -qam halve");
 			fs.writeFileSync(hold, "");
@@ -163,8 +164,8 @@ describe("Claude Code plugin", () => {
 			const free = async (h: Record<string, string>) => (await s.hook({ event: "PreToolUse", ...h })).hookSpecificOutput;
 			expect(await free({ tool_name: "Read", file_path: path.join(s.dir, "work.txt") })).toBeUndefined();
 			expect(await free({ tool_name: "Write", file_path: path.join(os.tmpdir(), "draft.patch") })).toBeUndefined();
-			expect(await free({ tool_name: "Bash", command: "git log --oneline | head; grep -rn work . > /tmp/found.txt", cwd: s.dir })).toBeUndefined();
-			for (const command of ["git commit -qam x", "echo 1 > work.txt", `sed -i '' s/5/4/ ${s.dir}/work.txt`, "cd /tmp && git -C " + s.dir + " stash"])
+			expect(await free({ tool_name: "Bash", command: "git log --oneline | head; grep -rn work . > /tmp/found.txt; cat bench.sh", cwd: s.dir })).toBeUndefined();
+			for (const command of ["git commit -qam x", "echo 1 > work.txt", `sed -i '' s/5/4/ ${s.dir}/work.txt`, "cd /tmp && git -C " + s.dir + " stash", "bash bench.sh --port=9999"])
 				expect([command, (await free({ tool_name: "Bash", command, cwd: s.dir }))?.permissionDecisionReason ?? "allowed"]).toEqual([command, expect.stringContaining("climb is measuring")]);
 			// Once per measurement the worker is told to keep working; then it may rest until the result wakes it.
 			const first = await s.hook({ event: "Stop" });
