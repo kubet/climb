@@ -1159,6 +1159,11 @@ describe("move", () => {
 			await y.cmd("shrink work");
 			expect(await y.tool("climb_probe", { name: "w", cmd: "cat work.txt" })).toContain("Probe w = 100");
 			expect(L.fold(L.read(d)).goals.get("g-shrink-work")!.probes).toHaveLength(1);
+			// After a restart, a goal whose tree is STUCK waits for the user: the one still climbing is meant.
+			L.append(d, { ts: L.now(), kind: "judge", goal: "g-an-old-goal", by: "judge", verdict: "stuck", diagnosis: "needs the user", next: "ask" });
+			const w = host(d, "main", "restarted");
+			await w.load();
+			expect(await w.tool("climb_probe", { name: "w2", cmd: "cat work.txt" })).toContain("Probe w2 = 100");
 		} finally {
 			fs.rmSync(d, { recursive: true, force: true });
 		}

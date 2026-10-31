@@ -714,6 +714,9 @@ export default async function climb(pi: ExtensionAPI) {
 		// Goals other sessions left behind are not this session's: the one it started or named is meant.
 		const ours = c.filter(g => mine.has(L.rootOf(st, g).id));
 		if (ours.length === 1) return ours[0];
+		// A STUCK tree waits for the user: after a restart, the one goal still climbing is meant.
+		const live = c.filter(g => !L.stuck(L.rootOf(st, g)));
+		if (live.length === 1) return live[0];
 		if (c.length) throw new Error(`Several active goals; pass goal: ${c.map(g => g.id).join(", ")}.`);
 		throw new Error("No active climb goal. The user starts one with /climb <intent>.");
 	}
