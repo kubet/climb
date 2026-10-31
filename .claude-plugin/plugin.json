@@ -1,6 +1,6 @@
 {
 	"name": "climb",
-	"version": "0.3.4",
+	"version": "0.3.5",
 	"description": "/climb: autonomous hill-climbing. You say what should get better; the agent picks metrics and targets and keeps trying changes. The plugin measures, decides kept or dropped, reverts drops, keeps the ledger, and does not let the agent stop while a goal is open.",
 	"author": { "name": "kubet", "url": "https://github.com/kubet" },
 	"repository": "https://github.com/kubet/climb",

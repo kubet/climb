@@ -11,14 +11,15 @@ const SERVER = path.join(import.meta.dir, "../claude/server.ts");
 type Result = { content: { text: string }[]; isError?: boolean };
 
 /** A repo with work.txt at 100, and the server started in it for `client`. `bin` goes first on PATH; no real claude is reachable. */
-function setup(name: string, bin?: string, client = "claude-code") {
+function setup(name: string, bin?: string, client = "claude-code", server = SERVER, env: Record<string, string> = {}) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), `climb-claude-${name}-`));
 	const sh = (c: string) => spawnSync("bash", ["-c", c], { cwd: dir, encoding: "utf8" });
 	sh("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
 	const PATH = [bin, ...(process.env.PATH ?? "").split(":").filter(d => !fs.existsSync(path.join(d, "claude")))].filter(Boolean).join(":");
-	const p = spawn("bun", [SERVER], { cwd: dir, env: { ...process.env, PATH, CLAUDE_PROJECT_DIR: dir }, stdio: ["pipe", "pipe", "inherit"] });
+	const p = spawn("bun", [server], { cwd: dir, env: { ...process.env, PATH, CLAUDE_PROJECT_DIR: dir, ...env }, stdio: ["pipe", "pipe", "inherit"] });
 	const waiting = new Map<number, (r: { result?: Result & Record<string, unknown> }) => void>();
 	const progress: string[] = [];
+	const notified: string[] = [];
 	let buf = "";
 	p.stdout.on("data", d => {
 		buf += d;
@@ -26,6 +27,7 @@ function setup(name: string, bin?: string, client = "claude-code") {
 			const m = JSON.parse(buf.slice(0, i));
 			buf = buf.slice(i + 1);
 			if (m.method === "notifications/progress") progress.push(m.params.message);
+			else if (m.method) notified.push(m.method);
 			else waiting.get(m.id)?.(m);
 		}
 	});
@@ -43,10 +45,48 @@ function setup(name: string, bin?: string, client = "claude-code") {
 		fs.rmSync(dir, { recursive: true, force: true });
 	};
 	const ready = rpc("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: client, version: "0" } });
-	return { dir, sh, rpc, tool, text, hook, progress, close, ready };
+	return { dir, sh, rpc, tool, text, hook, progress, notified, close, ready };
 }
 
 describe("Claude Code plugin", () => {
+	test("an installed update goes live in the running session between tool calls, never during one, with the climb carried over", async () => {
+		const cfg = fs.mkdtempSync(path.join(os.tmpdir(), "climb-cfg-"));
+		const cache = path.join(cfg, "plugins", "cache", "climb", "climb");
+		const install = (version: string) => {
+			const at = path.join(cache, version);
+			for (const d of ["src", "claude"]) fs.cpSync(path.join(import.meta.dir, "..", d), path.join(at, d), { recursive: true });
+			fs.writeFileSync(path.join(at, "package.json"), JSON.stringify({ name: "climb", version }));
+			fs.writeFileSync(path.join(cfg, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "climb@climb": [{ scope: "user", installPath: at, version }] } }));
+			return at;
+		};
+		const first = install("0.0.1");
+		const s = setup("hot", undefined, "claude-code", path.join(first, "claude", "server.ts"), { CLAUDE_CONFIG_DIR: cfg, CLIMB_UPDATE_CHECK_MS: "1" });
+		const hold = `${s.dir}-hold`;
+		try {
+			expect((await s.ready).result!.serverInfo).toMatchObject({ version: "0.0.1" });
+			await s.hook({ event: "UserPromptSubmit", prompt: "/climb shrink work" });
+			fs.writeFileSync(hold, "");
+			const probing = s.text("climb_probe", { name: "w", cmd: `while [ -f ${hold} ]; do sleep 0.05; done; cat work.txt` });
+			await Bun.sleep(200);
+			install("0.0.2");
+			// A tool call is running: the session keeps its climb until it returns.
+			const during = await s.hook({ event: "Stop" });
+			expect(JSON.stringify(during)).not.toContain("0.0.2");
+			fs.rmSync(hold);
+			expect(await probing).toContain("Probe w = 100");
+			await Bun.sleep(20);
+			const stop = await s.hook({ event: "Stop" });
+			expect(stop.systemMessage).toContain("climb 0.0.1 → 0.0.2: the update is live in this session, no restart.");
+			expect(stop.decision).toBe("block"); // the goal climbs on in the new code
+			expect(stop.reason).toContain("g-shrink-work");
+			expect(s.notified).toContain("notifications/tools/list_changed");
+		} finally {
+			fs.rmSync(hold, { force: true });
+			s.close();
+			fs.rmSync(cfg, { recursive: true, force: true });
+		}
+	});
+
 	test("a climb through the plugin: /climb starts it, Stop is refused while it is open, the tools measure, decide and record the harness", async () => {
 		const s = setup("climb");
 		try {

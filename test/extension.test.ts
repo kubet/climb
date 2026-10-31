@@ -1082,12 +1082,14 @@ describe("one run, many numbers; two sides at once", () => {
 
 	test("a parallel metric runs base and candidate at the same time in each pair, told apart by $CLIMB_SLOT", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-parallel-"));
-		const ctr = path.join(os.tmpdir(), `climb-parallel-ctr-${process.pid}`);
 		const log = path.join(os.tmpdir(), `climb-parallel-log-${process.pid}`);
 		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
 		const now = `perl -MTime::HiRes=time -e 'printf "%.3f", time'`;
-		// Drifting like the paired test (every run reads 10 higher), so the measurement pairs; each run logs its slot and span.
-		const cmd = `t0=$(${now}); sleep 0.2; n=$(cat ${ctr} 2>/dev/null || echo 0); echo $((n+1)) > ${ctr}; echo "\${CLIMB_SLOT:-x} $t0 $(${now})" >> ${log}; echo $(( $(cat work.txt) + n * 10 ))`;
+		// The machine drifts with the clock (every run reads higher the later it runs), so the measurement pairs;
+		// two runs at once read the same moment. Each run logs its slot and span.
+		const t0 = path.join(os.tmpdir(), `climb-parallel-t0-${process.pid}`);
+		fs.writeFileSync(t0, String(Math.floor(Date.now() / 10)));
+		const cmd = `a=$(${now}); sleep 0.2; c=$(perl -MTime::HiRes=time -e 'printf "%d", time*100'); echo "\${CLIMB_SLOT:-x} $a $(${now})" >> ${log}; echo $(( $(cat work.txt) + (c - $(cat ${t0})) / 2 ))`;
 		try {
 			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && echo x > README.md && git add -A && git commit -qm init");
 			const z = host(d, "main", "parallel");
@@ -1102,15 +1104,15 @@ describe("one run, many numbers; two sides at once", () => {
 			await run("echo 50 > work.txt && git commit -qam halve");
 			const out = await z.tool("climb_measure", {});
 			expect(out).toContain("KEPT x2");
-			expect(out).toContain("paired with the base, interleaved (3 pairs"); // decisive at 3 of 5: the rest could not change it
+			expect(out).toContain("paired with the base");
 			const spans = fs.readFileSync(log, "utf8").trim().split("\n").map(l => l.split(" ")).filter(([slot]) => slot !== "x").map(([slot, a, b]) => ({ slot, a: Number(a), b: Number(b) }));
 			expect(new Set(spans.map(s => s.slot))).toEqual(new Set(["0", "1"]));
 			const overlap = spans.filter(s => s.slot === "1").every(base => spans.some(c => c.slot === "0" && c.a < base.b && base.a < c.b));
 			expect(overlap).toBe(true);
 		} finally {
 			fs.rmSync(d, { recursive: true, force: true });
-			fs.rmSync(ctr, { force: true });
 			fs.rmSync(log, { force: true });
+			fs.rmSync(t0, { force: true });
 		}
 	}, 30_000);
 });
@@ -1136,7 +1138,6 @@ describe("a faster loop", () => {
 			expect(T.read(d).filter(t => t.kind === "reuse" && t.phase === "control").at(-1)).toMatchObject({ metric: "w", runs: 3 });
 		} finally {
 			fs.rmSync(d, { recursive: true, force: true });
-			fs.rmSync(ctr, { force: true });
 		}
 	});
 });

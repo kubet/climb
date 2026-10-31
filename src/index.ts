@@ -544,8 +544,9 @@ export default async function climb(pi: ExtensionAPI) {
 							return `${m.name}, ${who} run of pair ${i + 1}: ${r!.code === 0 ? "no number in its output" : `exit ${r!.code}${r!.killed ? " (killed/timeout)" : ""}: ${said(r!)}`}`;
 						};
 						// Side by side, both runs see the same network and load: drift cancels exactly, in half the time.
+						// Which side starts first alternates too, so a head start (a warm cache, the first port) cancels.
 						const failed = m.parallel
-							? (await Promise.all([one("a"), one("b")])).find(Boolean)
+							? (await Promise.all(i % 2 ? [one("b"), one("a")] : [one("a"), one("b")])).find(Boolean)
 							: ((await one(i % 2 ? "b" : "a")) ?? (await one(i % 2 ? "a" : "b")));
 						if (failed) {
 							if (v.a === undefined && i === 0 && !Object.keys(out).length && !failed.includes("candidate")) return undefined; // the base cannot run it here
@@ -1170,6 +1171,11 @@ export default async function climb(pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (_e, ctx) => {
 		if (ctx.agent?.kind !== "sub") ctxRef = ctx;
+	});
+
+	// A session that ends, or hands over to a newer climb (Claude Code's hot update), stops its heartbeat.
+	pi.on("session_shutdown", async () => {
+		if (ctxRef) stopTimer(ctxRef);
 	});
 
 	pi.on("session_stop", async (_e, ctx) => {
