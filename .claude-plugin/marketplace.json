@@ -1,6 +1,6 @@
 {
 	"$schema": "https://www.schemastore.org/claude-code-marketplace.json",
-	"name": "pi-climb",
+	"name": "climb",
 	"description": "/climb: autonomous hill-climbing with an enforcer that measures, decides and keeps the record.",
 	"owner": { "name": "kubet" },
 	"plugins": [

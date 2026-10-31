@@ -11,23 +11,23 @@ The agent writes the code. The extension measures, decides and keeps the record,
 **pi**
 
 ```bash
-pi install git:github.com/kubet/pi-climb
+pi install git:github.com/kubet/climb
 ```
 
 **omp**
 
 ```bash
-omp plugin install git+ssh://git@github.com/kubet/pi-climb.git
+omp plugin install git+ssh://git@github.com/kubet/climb.git
 ```
 
 **Claude Code** (needs [bun](https://bun.sh))
 
 ```bash
-claude plugin marketplace add kubet/pi-climb
-claude plugin install climb@pi-climb
+claude plugin marketplace add kubet/climb
+claude plugin install climb@climb
 ```
 
-From a local checkout: `claude --plugin-dir ./pi-climb`. Approve the climb tools when asked, or allow `mcp__plugin_climb_climb__*` in your permissions: a headless `claude -p` refuses tools nobody approved.
+From a local checkout: `claude --plugin-dir ./climb`. Approve the climb tools when asked, or allow `mcp__plugin_climb_climb__*` in your permissions: a headless `claude -p` refuses tools nobody approved.
 
 On omp, a stop hook keeps the agent working and the judge and acceptance review run as independent side turns. pi has neither, so there the heartbeat drives the loop, the agent's own diagnosis stands in for the judge, and achieved goals are marked unreviewed.
 
