@@ -405,8 +405,8 @@ export default async function climb(pi: ExtensionAPI) {
 
 	// Unbiased runs (A/A, controls) by tree and command. A tree measured minutes ago is
 	// not measured again: a rejected scorecard retries for free, and the control after a
-	// revert reuses the runs of the tree it restored. Kept results never enter the cache:
-	// they were selected for measuring well.
+	// revert reuses the runs of the tree it restored. Results kept on a measured gain never
+	// enter the cache: they were selected for measuring well. Those kept on a proof were not.
 	const FRESH_MS = 30 * 60_000;
 	const runs = new Map<string, { ts: number; xs: number[] }>();
 	async function measureTree(
@@ -512,7 +512,8 @@ export default async function climb(pi: ExtensionAPI) {
 					const n = Math.max(3, Math.min(6, m.samples + 2));
 					const ps = since !== undefined && baseTree && candTree ? T.pairsOf(traces, goal, m.name, cmdId(m.cmd), baseTree, candTree, since).slice(0, n) : [];
 					if (ps.length) T.append(root, { ts: L.now(), kind: "reuse", phase: "paired", goal, metric: m.name, runs: 2 * ps.length });
-					for (let i = ps.length; i < n; i++) {
+					// Three pairs that already decide with room to spare end it: the rest could not change the call.
+					for (let i = ps.length; i < n && !X.settled(m, ps); i++) {
 						const v: { a?: number; b?: number } = {};
 						/** One side's run: undefined when it ran, else why it could not. */
 						const one = async (side: "a" | "b"): Promise<string | undefined> => {
@@ -1669,8 +1670,20 @@ export default async function climb(pi: ExtensionAPI) {
 						);
 				}
 			}
-			const control = await measureTree(root, g.card.metrics, m => m.samples, { phase: "control", goal: g.id }, signal, say);
+			// A metric whose history drifts is decided in pairs, which measure the base afresh beside the candidate:
+			// a control measured now is stale by then (voice re-ran a 5-minute call bench 3 times per experiment
+			// for one). Its reference is the median of every run of this tree; one that shares its command with a
+			// steady metric costs nothing to measure, and commits made outside experiments still measure everything.
+			const traces0 = T.read(root);
+			const eff0 = effective(root, g, traces0).metrics;
+			const baseTree0 = await tree(root);
+			const since0 = cardSince(root, g);
+			const drifts = g.card.metrics.filter((m, i) => eff0[i].noise > m.noise);
+			const known = (m: L.Metric) => (baseTree0 ? T.treeMedian(traces0, g.id, m.name, baseTree0, since0, cmdId(m.cmd)) : undefined);
+			const inPairs = unmeasured ? [] : drifts.filter(m => known(m) !== undefined && !g.card!.metrics.some(o => o.cmd === m.cmd && !drifts.includes(o)));
+			const control = await measureTree(root, g.card.metrics.filter(m => !inPairs.includes(m)), m => m.samples, { phase: "control", goal: g.id }, signal, say);
 			if (control.errors.length) throw new Error(`Control measurement failed at ${base.slice(0, 8)}:\n${control.errors.join("\n")}`);
+			for (const m of inPairs) control.values[m.name] = known(m)!;
 			let adopted = "";
 			if (unmeasured && harmless) adopted = ` Adopted commits since ${unmeasured}: only test sources or the proof changed.`;
 			else if (unmeasured) {
@@ -1703,7 +1716,9 @@ export default async function climb(pi: ExtensionAPI) {
 			append(root, { ts: L.now(), kind: "exp", goal: g.id, id, lever: p.lever, hypothesis: p.hypothesis, prediction: p.prediction, base, ref: control.values, proof, runs: control.samples, env: ENV.hash });
 			refresh(ctx, root);
 			const ref = Object.entries(control.values).map(([k, v]) => `${k}=${v}`).join(", ");
-			const reused = control.reused.length ? ` (${control.reused.join(", ")}: reused runs of this tree from the last 30 minutes)` : "";
+			const reused =
+				(control.reused.length ? ` (${control.reused.join(", ")}: reused runs of this tree from the last 30 minutes)` : "") +
+				(inPairs.length ? ` (${inPairs.map(m => m.name).join(", ")}: the median of this tree's earlier runs; it drifts, so climb_measure decides it in pairs with the base measured afresh)` : "");
 			const proved = proof
 				? ` The proof fails here, as it must; its scripts (${Object.keys(proof.files).join(", ") || "inline"}) are frozen for ${id}.${ignoredProof.length ? ` Warning: ${ignoredProof.join(", ")} is git-ignored, so nothing versions or restores it; if it is deleted or cleaned up, the proof is void. Keep checks in tracked paths.` : ""}`
 				: "";
@@ -1889,6 +1904,10 @@ export default async function climb(pi: ExtensionAPI) {
 				else reason += ` — auto-revert failed (${rv.err}); restore by hand: git revert --no-commit ${exp.base.slice(0, 8)}..HEAD && git commit`;
 			}
 			append(root, { ts: L.now(), kind: "result", goal: g.id, exp: exp.id, head: h, values, verdict: kept ? "kept" : "dropped", reason: reason!, reverted, proof: byProof || undefined, runs: samples, paired: pairs, gates, env: ENV.hash });
+			// A result kept on its proof was not chosen for its numbers: its runs are fair samples of the new base,
+			// and the next experiment's control reuses them (voice re-measured 6-8 minutes of them per experiment).
+			const keptTree = byProof ? await tree(root) : undefined;
+			if (keptTree) for (const m of g.card.metrics) if (samples[m.name]?.length) runs.set(`${keptTree}\0${m.name}\0${m.cmd}`, { ts: L.clock.ms(), xs: samples[m.name] });
 			// Targets close a goal; a hold only must not have regressed, and its raw value against an old
 			// baseline is mostly the machine's drift, so one that looks regressed is checked in pairs.
 			const targetsMet = (vals: L.Values) => g.card!.metrics.every(m => m.hold || L.met(m, vals[m.name]));

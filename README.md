@@ -63,6 +63,7 @@ Meanwhile a heartbeat checks every 30 min; three quiet beats call an independent
 - **It measures, on commits.** The agent never reports its own numbers. A run that crashes decides nothing.
 - **Noise is measured, not guessed.** A gain must beat it. Borderline or drifting metrics are re-run interleaved with the base commit (A B B A), so machine drift cancels out. A metric whose pairs are noisier than the whole way to its target can keep nothing: experiments on it wait until the instrument is steadier (or carry a proof).
 - **One run, many numbers.** Metrics with the same command share each run; the command prints one `name=value` line per metric. A metric marked `parallel` runs base and candidate at once in each pair (it takes its port from `$CLIMB_SLOT`): half the time, and drift cancels exactly.
+- **Nothing is measured twice.** A result kept on its proof was not chosen for its numbers, so its runs are the next control. A drifting metric skips the control (its pairs measure the base afresh). Pairs stop at 3 when they already decide with room to spare.
 - **Measuring resumes.** A measurement that is cut off keeps its finished runs and pairs; calling again continues, and cannot re-roll them.
 - **The disk never fills.** Measuring stops below 2 GiB free, deciding nothing; a measurement that used over 1 GiB says so.
 - **Drops revert themselves.** An experiment that touches the benchmark is dropped.

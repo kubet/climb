@@ -164,7 +164,7 @@ export function loadOf(traces: Trace[], goal: string, tree: string, phases: Phas
 
 /** Typical duration of one good run of a metric, from recent traces. */
 export function runMs(traces: Trace[], goal: string, metric: string): number | undefined {
-	const ms = traces.filter((x): x is RunT => x.kind === "run" && x.goal === goal && x.metric === metric && x.code === 0).slice(-20).map(x => x.ms);
+	const ms = traces.filter((x): x is RunT => x.kind === "run" && x.goal === goal && x.metric === metric && x.code === 0 && !x.shared).slice(-20).map(x => x.ms);
 	return ms.length ? medianOf(ms) : undefined;
 }
 const medianOf = (xs: number[]) => {
@@ -193,7 +193,10 @@ export function summary(traces: Trace[], ledger: Entry[], nowMs: number, windowM
 		w.ms += x.ms;
 		why.set(k, w);
 	}
-	const metered = runs.filter(x => x.metric);
+	// A shared run is another metric's output read again: it took no time, and it is what one run of many numbers saves.
+	const metered = runs.filter(x => x.metric && !x.shared);
+	const shared = runs.filter(x => x.metric && x.shared);
+	const cmdMs = (cmd?: string) => medianOf(metered.filter(x => x.cmd === cmd && x.code === 0).map(x => x.ms));
 	const per = new Map<string, { n: number; bad: number; ms: number[] }>();
 	for (const x of metered) {
 		const p = per.get(x.metric!) ?? { n: 0, bad: 0, ms: [] };
@@ -224,8 +227,8 @@ export function summary(traces: Trace[], ledger: Entry[], nowMs: number, windowM
 		recovered: retried.filter(x => x.code === 0).length,
 		flaky: [...per].filter(([, p]) => p.bad).map(([metric, p]) => ({ metric, bad: p.bad, n: p.n })).sort((a, b) => b.bad / b.n - a.bad / a.n),
 		perRun: [...per].map(([metric, p]) => ({ metric, ms: medianOf(p.ms) })).sort((a, b) => b.ms - a.ms),
-		reusedRuns: sum(reuse.map(r => r.runs)),
-		savedMs: sum(reuse.map(r => r.runs * medianOf(per.get(r.metric)?.ms ?? [0]))),
+		reusedRuns: sum(reuse.map(r => r.runs)) + shared.length,
+		savedMs: sum(reuse.map(r => r.runs * medianOf(per.get(r.metric)?.ms ?? [0]))) + sum(shared.map(x => cmdMs(x.cmd))),
 		guard: { n: guards.length, failed: guards.filter(x => x.code !== 0).length, medianMs: medianOf(guards.map(x => x.ms)) },
 		experiments: {
 			n: results.length,

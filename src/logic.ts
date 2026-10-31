@@ -124,6 +124,16 @@ export function pairedVerdict(metrics: Metric[], pairs: Record<string, [number, 
 	return { kept: true, regressed: false, reason: `${head}: ${improved.map(fmt).join(", ")}`, stats };
 }
 
+/** Pairs that already decide a metric with room to spare, so more would not change the call: from 3 pairs,
+ *  a gain or a regression beyond twice its own interval, or a hold clear of its tolerance by twice it. */
+export function settled(m: Metric, ps: [number, number][]): boolean {
+	if (ps.length < 3) return false;
+	const s = pairedVerdict([m], { [m.name]: ps }).stats[m.name];
+	const tol = Math.max(s.noise, m.hold ? m.noise : 0);
+	if (s.gain < -tol - s.noise) return true;
+	return m.hold ? s.gain - 2 * s.noise > -tol : s.gain > 2 * s.noise;
+}
+
 /** Fewest samples (≤ 9) that bring a metric's noise under `need`. */
 export function samplesFor(xs: number[], baseline: number, need: number): number | undefined {
 	for (let s = 1; s <= 9; s++) if (noiseOf(xs, baseline, s) < need) return s;

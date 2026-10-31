@@ -96,6 +96,17 @@ describe("logic", () => {
 	});
 });
 
+describe("pairs that already decide", () => {
+	test("three pairs settle a clear gain or regression; a close call takes more", () => {
+		const m = metric({ baseline: 100, noise: 0.05 });
+		expect(X.settled(m, [[100, 50], [101, 52], [99, 49]])).toBe(true);
+		expect(X.settled(m, [[100, 150], [101, 152], [99, 149]])).toBe(true);
+		expect(X.settled(m, [[100, 97], [101, 103], [99, 95]])).toBe(false);
+		expect(X.settled(m, [[100, 50], [101, 52]])).toBe(false);
+		expect(X.settled(metric({ hold: true, noise: 0.2 }), [[100, 100], [101, 101], [99, 99.5]])).toBe(true);
+	});
+});
+
 describe("what a command touches", () => {
 	const root = "/r/repo";
 	const ch = (cmd: string, cwd = root) => X.changesTree(cmd, root, cwd, "/home/u");

@@ -1102,7 +1102,7 @@ describe("one run, many numbers; two sides at once", () => {
 			await run("echo 50 > work.txt && git commit -qam halve");
 			const out = await z.tool("climb_measure", {});
 			expect(out).toContain("KEPT x2");
-			expect(out).toContain("paired with the base");
+			expect(out).toContain("paired with the base, interleaved (3 pairs"); // decisive at 3 of 5: the rest could not change it
 			const spans = fs.readFileSync(log, "utf8").trim().split("\n").map(l => l.split(" ")).filter(([slot]) => slot !== "x").map(([slot, a, b]) => ({ slot, a: Number(a), b: Number(b) }));
 			expect(new Set(spans.map(s => s.slot))).toEqual(new Set(["0", "1"]));
 			const overlap = spans.filter(s => s.slot === "1").every(base => spans.some(c => c.slot === "0" && c.a < base.b && base.a < c.b));
@@ -1113,6 +1113,32 @@ describe("one run, many numbers; two sides at once", () => {
 			fs.rmSync(log, { force: true });
 		}
 	}, 30_000);
+});
+
+describe("a faster loop", () => {
+	test("a result kept on its proof is a fair sample of the new base: the next control reuses its runs", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-proofcache-"));
+		const ctr = path.join(os.tmpdir(), `climb-proofcache-ctr-${process.pid}`);
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		const cmd = `n=$(cat ${ctr} 2>/dev/null || echo 0); echo $((n+1)) > ${ctr}; cat work.txt`;
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && mkdir checks && echo 'test -f fixed' > checks/fixed.sh && git add -A && git commit -qm init");
+			const z = host(d, "main", "proofcache");
+			await z.load();
+			await z.cmd("fix it");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd, dir: "down", target: 10, noise: 0.05, samples: 3 }] });
+			await z.tool("climb_experiment", { lever: "fix", hypothesis: "", prediction: "", proof: "bash checks/fixed.sh" });
+			await run("touch fixed && git add fixed && git commit -qm fix");
+			expect(await z.tool("climb_measure", {})).toContain("proof passes");
+			const before = Number(fs.readFileSync(ctr, "utf8"));
+			await z.tool("climb_experiment", { lever: "next", hypothesis: "", prediction: "" });
+			expect(Number(fs.readFileSync(ctr, "utf8"))).toBe(before);
+			expect(T.read(d).filter(t => t.kind === "reuse" && t.phase === "control").at(-1)).toMatchObject({ metric: "w", runs: 3 });
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(ctr, { force: true });
+		}
+	});
 });
 
 describe("paired measurement, crashed", () => {
@@ -1791,9 +1817,9 @@ describe("resumed measurement", () => {
 			await run("echo y >> README.md && git commit -qam noop");
 			L.clock.ms = () => clock() + 31 * 60_000; // the base's A/A and control runs are stale now
 			expect(await z.tool("climb_measure", {})).toContain("DROPPED x1");
-			// The revert restored the base tree: its side of x1's pairs is x2's control.
+			// The revert restored the base tree, which drifts: x2's control is no run at all, the median of its runs so far (pairs decide it).
 			const before = count();
-			expect(await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" })).toContain("reused runs of this tree");
+			expect(await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" })).toContain("the median of this tree's earlier runs; it drifts, so climb_measure decides it in pairs");
 			expect(count()).toBe(before);
 			await run("echo 50 > work.txt && git commit -qam halve");
 			// Cut off in the second pair, once the first has finished.
