@@ -4,7 +4,9 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import climb, { DERIVED, disk, ENVS, leaksIntoRepo } from "../src/index";
+import climb, { DERIVED, disk, ENVS, leaksIntoRepo, retry } from "../src/index";
+
+retry.ms = 0; // a failed run is retried at once here
 import * as L from "../src/ledger";
 import * as X from "../src/logic";
 import * as T from "../src/trace";
@@ -1118,6 +1120,25 @@ describe("one run, many numbers; two sides at once", () => {
 });
 
 describe("a faster loop", () => {
+	test("a run that prints no number (an API blip) is retried once, like a crash, instead of failing the measurement", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-nan-"));
+		const ctr = path.join(os.tmpdir(), `climb-nan-ctr-${process.pid}`);
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "nan");
+			await z.load();
+			await z.cmd("faster");
+			// The first run blips (NaN, exit 0); every run after reads the file.
+			const cmd = `n=$(cat ${ctr} 2>/dev/null || echo 0); echo $((n+1)) > ${ctr}; if [ "$n" = 0 ]; then echo NaN; else cat work.txt; fi`;
+			expect(await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd, dir: "down", target: 10, noise: 0.05 }] })).toContain("w = 100");
+			expect(T.read(d).some(t => t.kind === "run" && t.metric === "w" && t.retry && t.value === 100)).toBe(true);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(ctr, { force: true });
+		}
+	});
+
 	test("a result kept on its proof is a fair sample of the new base: the next control reuses its runs", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-proofcache-"));
 		const ctr = path.join(os.tmpdir(), `climb-proofcache-ctr-${process.pid}`);

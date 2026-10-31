@@ -30,6 +30,19 @@ const RESUMES = " The runs it finished count: climb_measure resumes from them.";
 // An instrument that keeps outputs per run (voice's call recordings: 9 GB a day) fills a disk over nights of measuring.
 const DISK_MIN = 2 * 2 ** 30;
 /** Free bytes on a directory's disk (replaceable, like L.clock, for tests). */
+/** A failed run (a crash, or no number: an API that rate-limited or blipped) is retried once, after a pause: an instant
+ *  retry hits the same outage (voice's control failed when its router bench printed NaN three times in a row). */
+export const retry = { ms: Number(process.env.CLIMB_RETRY_MS ?? 20_000) };
+const pause = (signal?: AbortSignal) =>
+	new Promise<void>(resolve => {
+		const t = setTimeout(resolve, retry.ms);
+		signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+	});
+const numberIn = (r: { code: number; stdout: string }, name: string) => {
+	const n = r.code === 0 ? X.valueOf(r.stdout, name) : undefined;
+	return n !== undefined && Number.isFinite(n) ? n : undefined;
+};
+
 export const disk = {
 	free(dir: string): number {
 		try {
@@ -369,9 +382,11 @@ export default async function climb(pi: ExtensionAPI) {
 				}
 				progress?.(`${m.name} run ${i + 1}/${m.samples}`);
 				let r = await run(root, m.cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal);
-				if (r.code !== 0 && !r.killed && !signal?.aborted) {
+				if (numberIn(r, m.name) === undefined && !r.killed && !signal?.aborted) {
 					await restore(root);
-					r = await run(root, m.cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal, true);
+					progress?.(`${m.name} run ${i + 1}/${m.samples}: ${r.code === 0 ? "no number" : `exit ${r.code}`}, retrying in ${Math.round(retry.ms / 1000)}s`);
+					await pause(signal);
+					if (!signal?.aborted) r = await run(root, m.cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal, true);
 				}
 				// An operator interrupt is not a verdict: nothing is decided or reverted.
 				if (signal?.aborted)
@@ -537,6 +552,7 @@ export default async function climb(pi: ExtensionAPI) {
 							progress?.(`${m.name} pair ${i + 1}/${n}, ${m.parallel ? "base and candidate at once" : who}`);
 							let r: Awaited<ReturnType<typeof run>> | undefined;
 							for (let attempt = 0; attempt < 2 && v[side] === undefined; attempt++) {
+								if (attempt > 0) await pause(signal);
 								// $CLIMB_SLOT tells two runs at once apart (their ports): 0 is the candidate, 1 the base.
 								r = await run(side === "a" ? dir : root, `export CLIMB_SLOT=${side === "a" ? 1 : 0}; ${m.cmd}`, m.timeout_s * 1000, tag, signal, attempt > 0, root);
 								if (signal?.aborted) throw new Error(`Measurement interrupted; nothing was decided and the experiment stays open.${since === undefined ? "" : RESUMES}`);

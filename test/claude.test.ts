@@ -16,7 +16,7 @@ function setup(name: string, bin?: string, client = "claude-code", server = SERV
 	const sh = (c: string) => spawnSync("bash", ["-c", c], { cwd: dir, encoding: "utf8" });
 	sh("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
 	const PATH = [bin, ...(process.env.PATH ?? "").split(":").filter(d => !fs.existsSync(path.join(d, "claude")))].filter(Boolean).join(":");
-	const p = spawn("bun", [server], { cwd: dir, env: { ...process.env, PATH, CLAUDE_PROJECT_DIR: dir, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+	const p = spawn("bun", [server], { cwd: dir, env: { ...process.env, PATH, CLAUDE_PROJECT_DIR: dir, CLIMB_RETRY_MS: "0", ...env }, stdio: ["pipe", "pipe", "inherit"] });
 	const waiting = new Map<number, (r: { result?: Result & Record<string, unknown> }) => void>();
 	const progress: string[] = [];
 	const notified: string[] = [];
