@@ -1824,6 +1824,7 @@ export default async function climb(pi: ExtensionAPI) {
 			let samples: Record<string, number[]> = {};
 			let kept = false;
 			let byProof = false;
+			let streakChecked: string | undefined;
 			say("guard");
 			const broken = await guard(root, g.card.guard, g.id, signal);
 			const moved = await instrumentChanged(root, g.card, exp.base);
@@ -1950,6 +1951,25 @@ export default async function climb(pi: ExtensionAPI) {
 					}
 					if (!failed) gates.proof = "pass";
 				}
+				// Each proof keep asks only "no worse than the step before", so a slow slide passes every one (platinum's
+				// preference against the client's pick went 61 → 37 over five keeps). From the STREAK-th keep in a row, a keep is
+				// measured in pairs against where the streak started; a slide beyond noise stops it, a pass starts a new streak.
+				const anchor = byProof ? X.streakAnchor(g) : undefined;
+				if (anchor && anchor.n + 1 >= X.STREAK) {
+					const sp = await paired(root, anchor.head, g.card.metrics, g.id, signal, t => say(t && `the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)}, in pairs: ${t}`));
+					if (typeof sp === "string") throw new Error(`The check of the streak of proof keeps against ${anchor.head.slice(0, 8)} failed; nothing was decided and ${exp.id} stays open:\n${sp}\nFlaky: call climb_measure again.`);
+					if (sp) {
+						// A slide is one beyond the metric's own noise: every metric is held, as a hold metric is, to its tolerance.
+						const sv = X.pairedVerdict(eff.metrics.map(m => ({ ...m, hold: true })), sp);
+						if (sv.regressed) {
+							kept = byProof = false;
+							reason += `; but the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)} slid together: ${sv.reason.replace(/^regressed, /, "")}. Each passed against the step before; together they are worse. Drop this one, and undo or rethink the slide, or accept it by re-baselining with climb_scorecard`;
+						} else {
+							streakChecked = anchor.head;
+							reason += `; the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)} hold against it in pairs`;
+						}
+					}
+				}
 			}
 			if (noted) reason = `${reason!.replace(/[.\s]*$/, "")}.${noted}`;
 			let reverted: string | undefined;
@@ -1958,7 +1978,7 @@ export default async function climb(pi: ExtensionAPI) {
 				if (rv.sha) reverted = rv.sha;
 				else reason += ` — auto-revert failed (${rv.err}); restore by hand: git revert --no-commit ${exp.base.slice(0, 8)}..HEAD && git commit`;
 			}
-			append(root, { ts: L.now(), kind: "result", goal: g.id, exp: exp.id, head: h, values, verdict: kept ? "kept" : "dropped", reason: reason!, reverted, proof: byProof || undefined, runs: samples, paired: pairs, gates, env: ENV.hash });
+			append(root, { ts: L.now(), kind: "result", goal: g.id, exp: exp.id, head: h, values, verdict: kept ? "kept" : "dropped", reason: reason!, reverted, proof: byProof || undefined, runs: samples, paired: pairs, gates, env: ENV.hash, checked: (kept && streakChecked) || undefined });
 			// A result kept on its proof was not chosen for its numbers: its runs are fair samples of the new base,
 			// and the next experiment's control reuses them (voice re-measured 6-8 minutes of them per experiment).
 			const keptTree = byProof ? await tree(root) : undefined;

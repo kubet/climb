@@ -1119,6 +1119,39 @@ describe("one run, many numbers; two sides at once", () => {
 	}, 30_000);
 });
 
+describe("a streak of proof keeps", () => {
+	test("each keep passes against the step before; every third is checked against where the streak started, and a slide stops it", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-streak-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "streak");
+			await z.load();
+			await z.cmd("fix things");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "cat work.txt", dir: "down", target: 10, noise: 0.05 }] });
+			// Three fixes, each 4% slower than the one before: inside the 5% noise each time, 12.5% together.
+			const step = async (i: number, value: number) => {
+				await run(`echo 'test -f fix${i}' > check${i}.sh && git add check${i}.sh && git commit -qm check${i}`);
+				await z.tool("climb_experiment", { lever: `fix ${i}`, hypothesis: "", prediction: "", proof: `bash check${i}.sh` });
+				await run(`touch fix${i} && echo ${value} > work.txt && git add -A && git commit -qm fix${i}`);
+				return z.tool("climb_measure", {});
+			};
+			expect(await step(1, 104)).toContain("KEPT x1");
+			expect(await step(2, 108)).toContain("KEPT x2");
+			const third = await step(3, 112.5);
+			expect(third).toContain("DROPPED x3");
+			expect(third).toContain("the 3 proof keeps since");
+			expect(third).toContain("slid together");
+			// A keep that holds against the streak's start begins a new streak there.
+			expect(await step(4, 104)).toContain("hold against it in pairs");
+			expect(await step(5, 103)).toContain("KEPT x5");
+			expect(await step(6, 102)).not.toContain("proof keeps since");
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("a faster loop", () => {
 	test("a run that prints no number (an API blip) is retried once, like a crash, instead of failing the measurement", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-nan-"));

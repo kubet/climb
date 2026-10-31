@@ -389,6 +389,23 @@ export function nextAction(st: State, g: Goal, brief = false): string {
 	return `[climb ${g.id}] Keep climbing${tag}. State: ${cardSummary(g)}.${tried ? ` Levers tried: ${tried}.` : ""}${judged}${lessons(st, g)} Pick the lever with the highest expected gain on the metric furthest from target and call climb_experiment.`;
 }
 
+/** From this many keeps on a proof in a row, a keep is measured against where the streak started. */
+export const STREAK = 3;
+
+/** Where the current streak of proof keeps started: the last result kept on a measured gain or checked as a
+ *  streak, else the scorecard's commit; and how many proof keeps came since (drops are reverted, so they skip). */
+export function streakAnchor(g: Goal): { head: string; n: number } | undefined {
+	if (!g.card) return undefined;
+	let n = 0;
+	for (const r of [...g.results].reverse()) {
+		if (r.ts < g.card.ts) break;
+		if (r.verdict !== "kept") continue;
+		if (r.checked || !r.proof) return { head: r.head, n };
+		n++;
+	}
+	return g.card.head ? { head: g.card.head, n } : undefined;
+}
+
 /** Consecutive drops on any lever (renaming a lever does not reset it) demand an independent diagnosis. */
 export function streakBlocked(g: Goal): string | undefined {
 	if (g.streak < DROP_STREAK) return undefined;

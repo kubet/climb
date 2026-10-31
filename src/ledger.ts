@@ -93,6 +93,8 @@ export interface ResultE extends Base {
 	runs?: Record<string, number[]>;
 	/** When decided on interleaved base/candidate pairs: [base, candidate] per pair, per metric. */
 	paired?: Record<string, [number, number][]>;
+	/** A streak of proof keeps was measured in pairs against this commit, where it started, and held. */
+	checked?: string;
 	gates?: Gates;
 	/** Env hash at measurement. */
 	env?: string;
