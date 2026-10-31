@@ -124,6 +124,19 @@ export function pairedVerdict(metrics: Metric[], pairs: Record<string, [number, 
 	return { kept: true, regressed: false, reason: `${head}: ${improved.map(fmt).join(", ")}`, stats };
 }
 
+/** Pairs a close call gets: from 3, pairs stop as soon as they decide with room to spare (settled). */
+export const PAIRS = 6;
+
+/** The interval the pairs' own spread gives at `n` pairs: what pairing as long as it may would show
+ *  (3 pairs of a noisy jury read ±69% where 6 would read ±29%). */
+export function pairNoiseAt(m: Metric, ps: [number, number][], n = PAIRS): number {
+	const gains = ps.map(([a, b]) => gain(m, a, b));
+	if (gains.length < 2) return Number.POSITIVE_INFINITY;
+	const mean = gains.reduce((x, y) => x + y, 0) / gains.length;
+	const sd = Math.sqrt(gains.reduce((x, y) => x + (y - mean) ** 2, 0) / (gains.length - 1));
+	return Math.max(0.01, (t975(n - 1) * 1.2533 * sd) / Math.sqrt(n));
+}
+
 /** Pairs that already decide a metric with room to spare, so more would not change the call: from 3 pairs,
  *  a gain or a regression beyond twice its own interval, or a hold clear of its tolerance by twice it. */
 export function settled(m: Metric, ps: [number, number][]): boolean {

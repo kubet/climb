@@ -513,7 +513,9 @@ export default async function climb(pi: ExtensionAPI) {
 				// One command's run feeds every metric it prints, pair by pair and side by side.
 				const made = new Map<string, string>();
 				for (const m of metrics) {
-					const n = Math.max(3, Math.min(6, m.samples + 2));
+					// A close call gets every pair it may; a clear one stops at 3 (settled). Pairing only samples+2 times left a
+					// noisy jury 3 pairs: platinum's x2 read +28%, +25%, -12% and was dropped at ±69%, where 6 would read ±29%.
+					const n = X.PAIRS;
 					const ps = since !== undefined && baseTree && candTree ? T.pairsOf(traces, goal, m.name, cmdId(m.cmd), baseTree, candTree, since).slice(0, n) : [];
 					if (ps.length) T.append(root, { ts: L.now(), kind: "reuse", phase: "paired", goal, metric: m.name, runs: 2 * ps.length });
 					// Three pairs that already decide with room to spare end it: the rest could not change the call.
@@ -948,9 +950,10 @@ export default async function climb(pi: ExtensionAPI) {
 		return g.card!.metrics.flatMap(m => {
 			const ps = last.get(`${m.name}\0${m.cmd}`);
 			if (m.hold || !ps) return [];
-			const noise = X.pairedVerdict([m], { [m.name]: ps }).stats[m.name].noise;
+			// Deaf is what the most pairs it may get would still show: a result paired fewer times is no verdict on the instrument.
+			const noise = X.pairNoiseAt(m, ps);
 			const way = L.gain(m, m.baseline, m.target);
-			return noise >= way ? [{ m, noise, way, n: ps.length }] : [];
+			return noise >= way ? [{ m, noise, way, n: X.PAIRS }] : [];
 		});
 	}
 	const STEADY =
@@ -1659,7 +1662,7 @@ export default async function climb(pi: ExtensionAPI) {
 			const blind = p.proof ? [] : deaf(root, g);
 			if (targeted.length && blind.length === targeted.length)
 				throw new Error(
-					`No measurement can keep this experiment: ${blind.map(b => `${b.m.name}'s last ${b.n} pairs measured ±${(b.noise * 100).toFixed(1)}% noise, more than the whole way to its target (${(b.way * 100).toFixed(1)}%)`).join("; ")}. Any result would be luck. ${STEADY} Or pass proof: a verified fix is kept when nothing regressed.`,
+					`No measurement can keep this experiment: ${blind.map(b => `${b.m.name}'s pairs are spread so widely that even ${b.n} pairs would read ±${(b.noise * 100).toFixed(1)}%, more than the whole way to its target (${(b.way * 100).toFixed(1)}%)`).join("; ")}. Any result would be luck. ${STEADY} Or pass proof: a verified fix is kept when nothing regressed.`,
 				);
 			const say = progressTo(ctx, root, onUpdate, `${g.id} x${g.nextExp} control`);
 			let proof: L.Proof | undefined;
@@ -1886,8 +1889,9 @@ export default async function climb(pi: ExtensionAPI) {
 					for (const m of g.card.metrics) {
 						const s = pv.stats[m.name];
 						const way = L.gain(m, m.baseline, m.target);
-						if (!m.hold && s?.n && s.noise >= way)
-							noted += ` Note: ${m.name}'s pairs measured ±${(s.noise * 100).toFixed(1)}% noise, more than the whole way to its target (${(way * 100).toFixed(1)}%): no step on it can be told apart from luck, and experiments without a proof are refused until it is steadier. ${STEADY}`;
+						const most = s?.n ? X.pairNoiseAt(m, pairs![m.name] ?? []) : 0;
+						if (!m.hold && s?.n && most >= way)
+							noted += ` Note: ${m.name}'s pairs are spread so widely that even ${X.PAIRS} pairs would read ±${(most * 100).toFixed(1)}%, more than the whole way to its target (${(way * 100).toFixed(1)}%): no step on it can be told apart from luck, and experiments without a proof are refused until it is steadier. ${STEADY}`;
 					}
 				({ kept, reason } = v);
 				// A real-sized step under the noise is evidence of neither: say how many samples would resolve it

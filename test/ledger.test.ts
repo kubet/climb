@@ -105,6 +105,13 @@ describe("pairs that already decide", () => {
 		expect(X.settled(m, [[100, 50], [101, 52]])).toBe(false);
 		expect(X.settled(metric({ hold: true, noise: 0.2 }), [[100, 100], [101, 101], [99, 99.5]])).toBe(true);
 	});
+	test("an instrument is judged by what the most pairs it may get would show, not by 3 (platinum's x2)", () => {
+		const m = metric({ name: "pref", dir: "up", baseline: 50, target: 70 });
+		const x2: [number, number][] = [[42, 53.8], [38.2, 47.8], [47.5, 42]];
+		expect(X.pairedVerdict([m], { pref: x2 }).stats.pref.noise).toBeGreaterThan(0.6);
+		expect(X.pairNoiseAt(m, x2)).toBeLessThan(0.35);
+		expect(X.pairNoiseAt(m, x2)).toBeLessThan(L.gain(m, 50, 70));
+	});
 });
 
 describe("what a command touches", () => {
