@@ -162,6 +162,10 @@ describe("Claude Code plugin", () => {
 			expect(await free({ tool_name: "Bash", command: "git log --oneline | head; grep -rn work . > /tmp/found.txt", cwd: s.dir })).toBeUndefined();
 			for (const command of ["git commit -qam x", "echo 1 > work.txt", `sed -i '' s/5/4/ ${s.dir}/work.txt`, "cd /tmp && git -C " + s.dir + " stash"])
 				expect([command, (await free({ tool_name: "Bash", command, cwd: s.dir }))?.permissionDecisionReason ?? "allowed"]).toEqual([command, expect.stringContaining("climb is measuring")]);
+			// Once per measurement the worker is told to keep working; then it may rest until the result wakes it.
+			const first = await s.hook({ event: "Stop" });
+			expect(first.decision).toBe("block");
+			expect(first.reason).toContain("its result wakes you. Until then keep working");
 			expect((await s.hook({ event: "Stop" })).decision).toBeUndefined();
 			fs.rmSync(hold);
 			expect(await measured).toContain("KEPT x1");

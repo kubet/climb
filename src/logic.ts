@@ -357,7 +357,9 @@ export function nextAction(st: State, g: Goal, brief = false): string {
 	if (!g.card) {
 		const n = g.probes.filter(p => p.value !== undefined).length;
 		const judged = g.judge ? ` Judge (${g.judge.verdict}): ${g.judge.diagnosis} → ${g.judge.next}.` : "";
-		if (brief) return `[climb ${g.id}] Researching${tag} (${n} candidate metrics probed).${judged} Register candidates with climb_probe, then climb_scorecard with the 1-${MAX_METRICS} that matter.`;
+		// Said on every stop: a verdict repeated for hours outlives what it was about (platinum's "only the operator can
+		// re-point it" stood after the plugin learned to move the goal itself), so the brief leaves it to climb_status.
+		if (brief) return `[climb ${g.id}] Researching${tag} (${n} candidate metrics probed). Register candidates with climb_probe, then climb_scorecard with the 1-${MAX_METRICS} that matter: metrics whose commands cd into another repo take the goal there.`;
 		return `[climb ${g.id}] Researching "${g.intent}"${tag} (${n} candidate metrics probed).${judged} Itemize the research: register each candidate metric with climb_probe (the extension runs it). Then call climb_scorecard with the 1-${MAX_METRICS} that matter, each with a direction and an ambitious target. ${depth(st, g) < MAX_DEPTH ? "If the intent needs metrics with different instruments, split it into parts with climb_split." : `It is as deep as parts go: what one scorecard cannot hold goes in a part beside it (climb_split on ${g.parent}).`}${lessons(st, g)}`;
 	}
 	if (g.open) {

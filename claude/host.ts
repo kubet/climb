@@ -148,6 +148,8 @@ export async function createHost(io: { send: (msg: object) => void }, carry?: Ca
 	let idle = true;
 	/** Climb tool calls running now: Claude Code moves long ones to the background and carries on. */
 	let measuring = 0;
+	/** The worker was told to keep working through the measurement running now. */
+	let nudged = false;
 
 	const pi = {
 		harness: "claude-code",
@@ -219,8 +221,17 @@ export async function createHost(io: { send: (msg: object) => void }, carry?: Ca
 				idle = false;
 				return context("PostToolUse", said());
 			case "Stop": {
-				// A climb tool still running in the background wakes Claude when it settles: resting until then is no stop.
-				if (measuring) return toPerson();
+				// A climb tool still running in the background wakes Claude when it settles. Until then the worker is not
+				// done: voice's sat idle through every measurement. Asked once per measurement; then it may rest.
+				if (measuring) {
+					if (nudged) return toPerson();
+					nudged = true;
+					return {
+						decision: "block",
+						reason: "[climb] A measurement is running in the background; its result wakes you. Until then keep working: research the next lever, write its proof, draft the change in a scratch file (only changes to the measured checkout wait for the result).",
+						...toPerson(),
+					};
+				}
 				const r = await emit("session_stop", {});
 				const asks = wake;
 				const text = said();
@@ -262,6 +273,7 @@ export async function createHost(io: { send: (msg: object) => void }, carry?: Ca
 		} finally {
 			clearInterval(keepalive);
 			measuring--;
+			if (!measuring) nudged = false;
 			live.delete(id);
 		}
 	}
