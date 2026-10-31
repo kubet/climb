@@ -1090,11 +1090,14 @@ export default async function climb(pi: ExtensionAPI) {
 		if (event.toolName === "bash" && /git\s+clean\b[^"]*\s-\w*[xX]/.test(input))
 			return { block: true, reason: "git clean -x/-X would delete the climb ledger (.climb/)." };
 		const editing = /^(write|edit|apply_patch|ast_edit|notebook)$/.test(event.toolName);
-		if (input.includes(`${L.DIR}/`) || input.includes(`${L.DIR}"`)) {
-			if (editing) return { block: true, reason: LEDGER_GUARD };
-			if (event.toolName === "bash" && /(>|\brm\b|\bmv\b|\bcp\b|sed\s+-i|\btruncate\b|\btee\b|\bdd\b)/.test(input))
-				return { block: true, reason: LEDGER_GUARD };
-			return;
+		if (X.namesDir(input, L.DIR)) {
+			// The edit's target, not its text: a test or a doc that mentions the ledger is not the ledger. A patch names its files inside.
+			const at = event.input as { path?: unknown; file_path?: unknown; notebook_path?: unknown; command?: unknown } | undefined;
+			const target = [at?.path, at?.file_path, at?.notebook_path].filter((p): p is string => typeof p === "string");
+			if (editing && (event.toolName === "apply_patch" || !target.length || target.some(p => X.writesLedger(`> ${p}`, L.DIR)))) return { block: true, reason: LEDGER_GUARD };
+			// Only a write into the ledger: a read whose redirect goes elsewhere ("2>/dev/null") was refused too.
+			if (event.toolName === "bash" && X.writesLedger(typeof at?.command === "string" ? at.command : input, L.DIR)) return { block: true, reason: LEDGER_GUARD };
+			if (!editing) return;
 		}
 		// Freeze rule: while an experiment is open its instrument cannot change.
 		if (!editing || ctx.agent?.kind === "sub") return;

@@ -389,6 +389,20 @@ function executed(cmd: string): { tok: string; first: boolean; afterFlag: boolea
 	return out;
 }
 
+/** Whether `s` names the directory `dir` as a path component (".climb/x", "mv .climb /tmp"; not ".climbing"). */
+export const namesDir = (s: string, dir: string) => new RegExp(`(^|[\\s"'=/(])${dir.replace(/\./g, "\\.")}(/|$|[\\s"';|&)\\\\])`).test(s);
+
+/** Whether a shell command writes into the ledger directory `dir`: a redirect into it, a cd into it, or a
+ *  file-changing command (rm, mv, cp, tee, sed -i, ...) naming it. A read whose redirect goes elsewhere
+ *  (`tail .climb/trace.jsonl 2>/dev/null > /tmp/t`) is not a write. */
+export function writesLedger(cmd: string, dir: string): boolean {
+	return cmd.split(/&&|\|\||[;|\n]/).some(part => {
+		if (!namesDir(part, dir)) return false;
+		if ([...part.matchAll(/\d?>{1,2}\s*(\S+)/g)].some(m => namesDir(` ${m[1]}`, dir))) return true;
+		return /^\s*(\S+=\S*\s+)*(sudo\s+)?(rm|mv|cp|tee|truncate|dd|install|ln|chmod|cd)\b/.test(part) || /\bsed\s+(-\w+\s+)*-i/.test(part);
+	});
+}
+
 /** Tracked files a command executes (scripts after an interpreter or test runner,
  *  or invoked as ./path): the instrument, frozen automatically. Plain data reads
  *  like `cat out.txt` or `wc -l < src.py` are the thing being optimized, not frozen. */

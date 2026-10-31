@@ -199,6 +199,14 @@ describe("climb extension", () => {
 		expect((await x.emit("tool_call", { toolName: "bash", input: { command: "git clean -fdx" } }))?.block).toBe(true);
 		expect(await x.emit("tool_call", { toolName: "bash", input: { command: "tail .climb/oracle.jsonl" } })).toBeUndefined();
 		expect(await x.emit("tool_call", { toolName: "write", input: { path: "src/a.ts" } })).toBeUndefined();
+		// Writes into the ledger are refused; reads that redirect elsewhere and files that only mention it are not
+		// (a Claude Code session was refused its own `2>/dev/null`, and omp refused edits of tests that name the ledger).
+		for (const command of ["echo x > .climb/oracle.jsonl", "echo x >> ./.climb/trace.jsonl", "printf x | tee -a .climb/oracle.jsonl", "mv .climb /tmp/gone", "sed -i s/a/b/ .climb/oracle.jsonl", "cd .climb && echo > oracle.jsonl", 'echo x > "$PWD/.climb/oracle.jsonl"'])
+			expect((await x.emit("tool_call", { toolName: "bash", input: { command } }))?.block).toBe(true);
+		for (const command of ["tail -n 3 .climb/oracle.jsonl 2>/dev/null | cut -c1-200", "cat .climb/lease.json > /tmp/lease.json", "cp src/a.ts src/b.ts && grep kept .climb/oracle.jsonl", "ls -la .climb/ 2>&1 | head"])
+			expect(await x.emit("tool_call", { toolName: "bash", input: { command } })).toBeUndefined();
+		expect((await x.emit("tool_call", { toolName: "edit", input: { path: `${dir}/.climb/oracle.jsonl` } }))?.block).toBe(true);
+		expect(await x.emit("tool_call", { toolName: "edit", input: { path: "test/a.test.ts", newText: "tail .climb/oracle.jsonl > /tmp/x" } })).toBeUndefined();
 	});
 
 	test("heartbeat: skips while busy, watchdog at 2x, drives work when idle; poke_max stale beats summon the judge", async () => {
