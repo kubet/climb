@@ -172,6 +172,8 @@ export interface Goal {
 	done?: DoneE;
 	/** The checkout this goal moved to: it is no longer climbed here. */
 	moved?: string;
+	/** Not from the ledger: paths its instrument names that are gone (a deleted scratchpad), set when it is loaded. */
+	gone?: string[];
 	series: Map<string, Point[]>;
 	nextExp: number;
 }

@@ -1142,6 +1142,37 @@ describe("a faster loop", () => {
 	});
 });
 
+describe("what the stop hook says", () => {
+	test("one short line per goal on every stop; a goal whose instrument is gone does not hold the worker", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-stoptext-"));
+		const backend = fs.mkdtempSync(path.join(os.tmpdir(), "climb-backend-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			fs.writeFileSync(path.join(backend, "server"), "");
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "stoptext");
+			await z.load();
+			await z.cmd("make the work much smaller, and think hard about every part of it, research everything");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: `test -e ${backend}/server && cat work.txt`, dir: "down", target: 10, noise: 0.05 }] });
+			await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" });
+			await run("echo 50 > work.txt && git commit -qam halve");
+			await z.tool("climb_measure", {});
+			const stop = (await z.emit("session_stop"))!;
+			expect(stop.decision).toBe("block");
+			expect(stop.reason).not.toContain("Levers tried");
+			expect(stop.reason).not.toContain("think hard about every part");
+			expect(stop.reason.length).toBeLessThan(400);
+			// The scratchpad that held its backend is deleted: the goal says so, and stopping is allowed.
+			fs.rmSync(backend, { recursive: true, force: true });
+			expect(await z.emit("session_stop")).toBeUndefined();
+			expect(await z.tool("climb_status", {})).toContain(`Its instrument is gone: ${backend}/server no longer exists`);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(backend, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("paired measurement, crashed", () => {
 	test("a paired run that crashes after pairs were collected decides nothing; the experiment stays open", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-paircrash-"));

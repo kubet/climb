@@ -325,17 +325,24 @@ function lessons(st: State, g: Goal): string {
 }
 
 /** The single next obligation the worker must meet for this goal (for a split goal: for its next part). */
-export function nextAction(st: State, g: Goal): string {
+/** What the worker owes a goal next. `brief`: one line, as the stop hook says it on every stop (the levers,
+ *  knowledge and diagnoses it has already read stay in climb_status). */
+export function nextAction(st: State, g: Goal, brief = false): string {
 	const tag = g.parent ? ` (pass goal: "${g.id}")` : "";
+	if (g.gone?.length && !g.open && !umbrella(st, g))
+		return `[climb ${g.id}] Its instrument is gone: ${g.gone.join(", ")} no longer exist${g.gone.length > 1 ? "" : "s"}${tag}. Re-baseline it with climb_scorecard on a command that runs, or leave it to the user to close (/climb done ${g.id}).`;
 	if (g.stallPending && !openIn(st, g))
 		return `[climb ${g.id}] STALLED: no progress in ${g.lastBeat?.stale ?? "several"} heartbeats. Stop and diagnose before experimenting: is the lever wrong, the metric broken/noisy, something blocked, or are you grid-searching one idea? Call climb_judge with an honest diagnosis and the next move; where an independent judge runs, its verdict releases the stall. State: ${umbrella(st, g) ? `split into ${openParts(st, g).map(p => p.id).join(", ")}` : cardSummary(g)}.`;
 	if (umbrella(st, g)) {
 		const ps = openParts(st, g);
 		// Closing what is all but done is the cheapest win, wherever in the tree it waits. Then stay on the
 		// part being climbed: a drop is not a reason to switch (the drop streak and the judge decide that).
-		const next = ps.find(p => openIn(st, p)) ?? ps.find(p => subtree(st, p).some(x => finishing(st, x))) ?? current(st, ps) ?? ps.find(p => !p.card && !umbrella(st, p)) ?? [...ps].sort((a, b) => goalPct(st, a) - goalPct(st, b))[0];
-		const list = ps.map(p => `${p.id} (${p.card || umbrella(st, p) ? `${goalPct(st, p)}%` : "researching"}${openIn(st, p) ? `, ${openIn(st, p)!.open!.id} open` : ""})`).join(", ");
-		return `[climb ${g.id}] Split into parts: ${list}. Next, ${next.id}: ${nextAction(st, next)}`;
+		// A part that cannot be measured any more is not where the climb goes next while another can be.
+		const able = ps.filter(p => !subtree(st, p).every(x => x.done || x.gone?.length || umbrella(st, x)));
+		const pool = able.length ? able : ps;
+		const next = pool.find(p => openIn(st, p)) ?? pool.find(p => subtree(st, p).some(x => finishing(st, x))) ?? current(st, pool) ?? pool.find(p => !p.card && !umbrella(st, p)) ?? [...pool].sort((a, b) => goalPct(st, a) - goalPct(st, b))[0];
+		const list = ps.map(p => `${p.id} (${p.card || umbrella(st, p) ? `${goalPct(st, p)}%` : "researching"}${openIn(st, p) ? `, ${openIn(st, p)!.open!.id} open` : ""}${pool.includes(p) ? "" : ", instrument gone"})`).join(", ");
+		return `[climb ${g.id}] Split into parts: ${list}. Next, ${next.id}: ${nextAction(st, next, brief)}`;
 	}
 	if (finishing(st, g) && !g.reviewed)
 		return `[climb ${g.id}] Every target is met, yet ${g.id} is not closed${tag}: the re-measurement at closure did not confirm it, or a hold metric looked regressed since its scorecard. Restore any regression, then confirm: climb_scorecard with the same checks (measured again at HEAD; a check that already passes is welcome there, and once every metric meets its target the acceptance review is asked; one that comes out short is re-baselined there, and the climb goes on with climb_experiment).`;
@@ -350,6 +357,7 @@ export function nextAction(st: State, g: Goal): string {
 	if (!g.card) {
 		const n = g.probes.filter(p => p.value !== undefined).length;
 		const judged = g.judge ? ` Judge (${g.judge.verdict}): ${g.judge.diagnosis} → ${g.judge.next}.` : "";
+		if (brief) return `[climb ${g.id}] Researching${tag} (${n} candidate metrics probed).${judged} Register candidates with climb_probe, then climb_scorecard with the 1-${MAX_METRICS} that matter.`;
 		return `[climb ${g.id}] Researching "${g.intent}"${tag} (${n} candidate metrics probed).${judged} Itemize the research: register each candidate metric with climb_probe (the extension runs it). Then call climb_scorecard with the 1-${MAX_METRICS} that matter, each with a direction and an ambitious target. ${depth(st, g) < MAX_DEPTH ? "If the intent needs metrics with different instruments, split it into parts with climb_split." : `It is as deep as parts go: what one scorecard cannot hold goes in a part beside it (climb_split on ${g.parent}).`}${lessons(st, g)}`;
 	}
 	if (g.open) {
@@ -360,6 +368,7 @@ export function nextAction(st: State, g: Goal): string {
 		const turn = pivot ? ` The judge said PIVOT after ${g.open.id} opened: ${pivot.next.replace(/[.\s]+$/, "")}. If ${g.open.id} is not that, measure what it has or drop it (climb_measure with abandon), then do that.` : "";
 		return `[climb ${g.id}] Experiment ${g.open.id} is open (lever "${g.open.lever}": ${g.open.hypothesis}). Finish it: implement, commit, then call climb_measure${tag}.${turn} State: ${cardSummary(g)}.`;
 	}
+	if (brief) return `[climb ${g.id}] Keep climbing${tag}: ${cardSummary(g)}. Next lever: climb_experiment (climb_status has the levers tried and the knowledge).`;
 	const tried = [...g.levers.entries()].map(([k, l]) => `${k} (${l.kept}/${l.tried} kept)`).join(", ");
 	const judged = g.diagnosis ? ` Last diagnosis (${g.diagnosis.by}): ${g.diagnosis.verdict} — ${g.diagnosis.next}.` : "";
 	return `[climb ${g.id}] Keep climbing${tag}. State: ${cardSummary(g)}.${tried ? ` Levers tried: ${tried}.` : ""}${judged}${lessons(st, g)} Pick the lever with the highest expected gain on the metric furthest from target and call climb_experiment.`;

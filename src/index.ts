@@ -728,7 +728,18 @@ export default async function climb(pi: ExtensionAPI) {
 
 	// --- state + delivery --------------------------------------------------------
 
-	const load = (root: string) => L.fold(L.read(root));
+	const load = (root: string) => instruments(L.fold(L.read(root)));
+	/** Marks goals whose instrument names a path that is gone with its folder (a deleted session scratchpad): an output
+	 *  path the command writes still has its folder. Voice's parent goal measured with a backend in a scratchpad deleted days ago. */
+	function instruments(st: L.State): L.State {
+		for (const g of L.active(st)) {
+			if (!g.card) continue;
+			const paths = [...new Set([...g.card.metrics.map(m => m.cmd), g.card.guard ?? ""].flatMap(X.absolutePaths))];
+			const lost = paths.filter(f => !SYSTEM.test(f) && !fs.existsSync(f) && !fs.existsSync(path.dirname(f)));
+			if (lost.length) g.gone = lost.slice(0, 3);
+		}
+		return st;
+	}
 
 	function pick(st: L.State, id?: string, pred?: (g: L.Goal) => boolean, exact = false): L.Goal {
 		const g = choose(st, id, pred, exact);
@@ -1185,7 +1196,9 @@ export default async function climb(pi: ExtensionAPI) {
 		if (!root) return;
 		const st = load(root);
 		// A part rests with its root: a STUCK or judged tree does not hold the worker.
-		const goals = L.active(st).filter(g => !L.stuck(L.rootOf(st, g)) && !judging.has(L.rootOf(st, g).id) && !judging.has(g.id));
+		// A tree whose every open goal lost its instrument cannot be climbed: it rests with the user, like STUCK.
+		const climbable = (r: L.Goal) => L.subtree(st, r).some(x => !x.done && !x.moved && !x.gone?.length && !L.umbrella(st, x));
+		const goals = L.active(st).filter(g => !L.stuck(L.rootOf(st, g)) && climbable(L.rootOf(st, g)) && !judging.has(L.rootOf(st, g).id) && !judging.has(g.id));
 		if (st.paused || !goals.length || !lease(root, ctx)) {
 			stopIdle = 0;
 			stopLines = -1;
@@ -1211,7 +1224,7 @@ export default async function climb(pi: ExtensionAPI) {
 			for (const g of goals) void judge(ctx, root, g.id, "worker kept stopping idle");
 			return;
 		}
-		return { decision: "block" as const, reason: [...new Set(goals.map(g => L.rootOf(st, g)))].map(g => X.nextAction(st, g)).join("\n") };
+		return { decision: "block" as const, reason: [...new Set(goals.map(g => L.rootOf(st, g)))].map(g => X.nextAction(st, g, true)).join("\n") };
 	});
 
 	// Survive host compaction: the summary always carries the authoritative climb state.
