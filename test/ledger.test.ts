@@ -115,6 +115,13 @@ describe("what a command touches", () => {
 			expect([c, ch(c)]).toEqual([c, true]);
 		for (const c of ["git log --oneline | head", "git status --short; git diff", "git stash list", "grep -rn x . > /tmp/found", "cat a.txt 2>/dev/null", "bun test 2>&1 | tail", "cp src/a.ts /tmp/a", "cd /tmp && echo 1 > a.txt", "git -C /other commit -m x", "python3 bench.py --out /tmp/r.json"])
 			expect([c, ch(c)]).toEqual([c, false]);
+		// Variables the command sets are expanded; a path it cannot place is not counted inside (voice's scratch copy was refused).
+		const W = "/tmp/claude/scratchpad/wt";
+		expect(ch(`W=${W}; rm -rf $W && mkdir -p $W && git -C /r/repo archive HEAD | tar -x -C $W && cd $W && ln -sf /r/repo/node_modules node_modules`)).toBe(false);
+		expect(ch(`W=${W} && (git worktree add --detach $W HEAD || true) && cd $W && ln -sf /r/repo/.env .env`)).toBe(false);
+		expect(ch("D=/r/repo/src; rm $D/a.ts")).toBe(true);
+		expect(ch("export D=/r/repo; echo x > $D/a")).toBe(true);
+		expect(ch("rm -rf $UNKNOWN/x")).toBe(false);
 		// From another directory, relative writes land there.
 		expect(ch("echo 1 > a.txt", "/tmp")).toBe(false);
 		expect(ch("cd /r/repo && echo 1 > a.txt", "/tmp")).toBe(true);

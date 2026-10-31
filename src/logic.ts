@@ -444,17 +444,27 @@ const WRITERS = /^(rm|mv|cp|tee|touch|truncate|dd|install|ln|chmod|chown|mkdir|r
  *  writes elsewhere (a scratch file, another repo), do not. `home` expands ~; `real` resolves symlinks
  *  (/var is /private/var), so a path is compared as git names the checkout. */
 export function changesTree(cmd: string, root: string, cwd: string, home: string, real: (p: string) => string = p => p): boolean {
-	let at = cwd;
-	const abs = (p: string) => real(pathResolve(at, unquote(p).replace(/^~(?=\/|$)/, home)));
-	const inside = (p: string) => {
-		const a = abs(p);
-		return a === root || a.startsWith(`${root}/`);
+	// Variables the command sets are expanded (W=$scratch/x && rm -rf $W is not this checkout); a path that
+	// still holds a variable or a substitution cannot be placed, so it is not counted inside: a false refusal
+	// idles a worker, a missed one only risks a noisy run that a pair would catch.
+	const vars = new Map<string, string>();
+	let at: string | undefined = cwd;
+	const abs = (p: string): string | undefined => {
+		const x = unquote(p).replace(/\$\{?(\w+)\}?/g, (m, k: string) => vars.get(k) ?? m).replace(/^~(?=\/|$)/, home);
+		if (/[$`]/.test(x) || (!x.startsWith("/") && at === undefined)) return undefined;
+		return real(pathResolve(at ?? "/", x));
 	};
+	const under = (a: string | undefined) => a !== undefined && (a === root || a.startsWith(`${root}/`));
+	const inside = (p: string) => under(abs(p));
 	for (const part of cmd.split(/&&|\|\||[;|\n]/)) {
 		const redirects = [...part.matchAll(/(?<![<&])\d?>{1,2}\|?\s*([^\s&|;<>()]+)/g)].map(m => m[1]).filter(t => t !== "/dev/null" && !t.startsWith("&"));
 		if (redirects.some(inside)) return true;
-		const words = part.replace(/\d?>{1,2}\|?\s*[^\s&|;<>()]+/g, " ").trim().split(/\s+/).filter(Boolean).map(unquote);
-		while (words.length && (/^\w+=/.test(words[0]) || words[0] === "sudo" || words[0] === "command")) words.shift();
+		const words = part.replace(/\d?>{1,2}\|?\s*[^\s&|;<>()]+/g, " ").replace(/^[\s(]+/, "").trim().split(/\s+/).filter(Boolean).map(unquote);
+		if (words[0] === "export") words.shift();
+		while (words.length && (/^\w+=/.test(words[0]) || words[0] === "sudo" || words[0] === "command")) {
+			const set = /^(\w+)=(.*)$/.exec(words.shift()!);
+			if (set) vars.set(set[1], unquote(set[2]).replace(/\$\{?(\w+)\}?/g, (m, k: string) => vars.get(k) ?? m));
+		}
 		const [w0, ...args] = words;
 		if (!w0) continue;
 		const files = args.filter(a => !a.startsWith("-"));
@@ -471,7 +481,7 @@ export function changesTree(cmd: string, root: string, cwd: string, home: string
 			}
 			const verb = args[i];
 			const sub = args[i + 1];
-			if (verb && GIT_WRITES.test(verb) && !(verb === "stash" && /^(list|show)$/.test(sub ?? "")) && (dir === root || dir.startsWith(`${root}/`))) return true;
+			if (verb && GIT_WRITES.test(verb) && !(verb === "stash" && /^(list|show)$/.test(sub ?? "")) && under(dir)) return true;
 			continue;
 		}
 		const targets = /^(cp|install|ln|rsync)$/.test(w0) ? files.slice(-1) : w0 === "dd" ? args.filter(a => a.startsWith("of=")).map(a => a.slice(3)) : files;
