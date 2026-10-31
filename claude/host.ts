@@ -120,6 +120,8 @@ export interface Carry {
 	notes: string[];
 	wake: boolean;
 	idle: boolean;
+	/** The extension's memory (measurement cache, the session's goals, judges running): the same object, passed on. */
+	keep?: Record<string, unknown>;
 }
 export interface Host {
 	version: string;
@@ -153,6 +155,7 @@ export async function createHost(io: { send: (msg: object) => void }, carry?: Ca
 
 	const pi = {
 		harness: "claude-code",
+		keep: carry?.keep ?? {},
 		typebox: { Type },
 		logger: { warn: (msg: string, o?: object) => console.error(msg, o ?? ""), debug() {} },
 		on: (ev: string, fn: Handler) => handlers.set(ev, [...(handlers.get(ev) ?? []), fn]),
@@ -298,7 +301,7 @@ export async function createHost(io: { send: (msg: object) => void }, carry?: Ca
 		call: async (id, p) => rename(await call(id, p)) as object,
 		cancel: id => live.get(id)?.abort(),
 		busy: () => measuring,
-		handoff: () => ({ outbox: outbox.splice(0), notes: notes.splice(0), wake, idle }),
+		handoff: () => ({ outbox: outbox.splice(0), notes: notes.splice(0), wake, idle, keep: pi.keep }),
 		stop: async () => {
 			await emit("session_shutdown", {});
 		},

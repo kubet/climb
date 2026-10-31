@@ -65,6 +65,7 @@ describe("Claude Code plugin", () => {
 		try {
 			expect((await s.ready).result!.serverInfo).toMatchObject({ version: "0.0.1" });
 			await s.hook({ event: "UserPromptSubmit", prompt: "/climb shrink work" });
+			await s.text("climb_scorecard", { metrics: [{ name: "work", cmd: "cat work.txt", dir: "down", target: 10, noise: 0.05 }] });
 			fs.writeFileSync(hold, "");
 			const probing = s.text("climb_probe", { name: "w", cmd: `while [ -f ${hold} ]; do sleep 0.05; done; cat work.txt` });
 			await Bun.sleep(200);
@@ -80,6 +81,8 @@ describe("Claude Code plugin", () => {
 			expect(stop.decision).toBe("block"); // the goal climbs on in the new code
 			expect(stop.reason).toContain("g-shrink-work");
 			expect(s.notified).toContain("notifications/tools/list_changed");
+			// The extension's memory came along: the control reuses the A/A runs measured before the update.
+			expect(await s.text("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" })).toContain("reused runs of this tree");
 		} finally {
 			fs.rmSync(hold, { force: true });
 			s.close();

@@ -149,10 +149,14 @@ export default async function climb(pi: ExtensionAPI) {
 	// omp, pi, or a host shim that names itself (Claude Code's): one scorecard climbed by two harnesses compares from the exports.
 	const harness = (pi as { harness?: string }).harness ?? (omp ? "omp" : "pi");
 	const ENV = envOf(harness);
+	// What the session learned in memory survives a hot update (Claude Code swaps in a newer climb between tool
+	// calls): a host that keeps the session hands the same object to the next version.
+	const keep = ((pi as { keep?: Record<string, unknown> }).keep ?? {}) as Record<string, unknown>;
+	const kept = <T>(name: string, make: () => T): T => (keep[name] ??= make()) as T;
 	const roots = new Map<string, string>();
 	/** Root goals this session started or named. */
-	const mine = new Set<string>();
-	const judging = new Set<string>();
+	const mine = kept("mine", () => new Set<string>());
+	const judging = kept("judging", () => new Set<string>());
 	let ctxRef: Ctx | undefined;
 	let timer: unknown;
 	let beating = false;
@@ -202,7 +206,7 @@ export default async function climb(pi: ExtensionAPI) {
 
 	// A climb that moved out of a checkout (its instrument lives elsewhere, or other work dirtied it) leaves
 	// .climb/away.json behind: sessions there follow it while it climbs on, unless another live session climbs here.
-	const away = new Map<string, string>();
+	const away = kept("away", () => new Map<string, string>());
 	const AWAY = "away.json";
 	function awayOf(top: string): string | undefined {
 		const mem = away.get(top);
@@ -408,7 +412,7 @@ export default async function climb(pi: ExtensionAPI) {
 	// revert reuses the runs of the tree it restored. Results kept on a measured gain never
 	// enter the cache: they were selected for measuring well. Those kept on a proof were not.
 	const FRESH_MS = 30 * 60_000;
-	const runs = new Map<string, { ts: number; xs: number[] }>();
+	const runs = kept("runs", () => new Map<string, { ts: number; xs: number[] }>());
 	async function measureTree(
 		root: string,
 		metrics: L.Metric[],
@@ -654,7 +658,7 @@ export default async function climb(pi: ExtensionAPI) {
 	}
 
 	// A guard that passed on this tree minutes ago passes again: retries skip the test suite.
-	const guardPassed = new Map<string, number>();
+	const guardPassed = kept("guardPassed", () => new Map<string, number>());
 	async function guard(root: string, cmd: string | undefined, goal: string, signal?: AbortSignal): Promise<string | undefined> {
 		if (!cmd) return undefined;
 		const key = `${await tree(root)}\0${cmd}`;
