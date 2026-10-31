@@ -280,6 +280,11 @@ describe("climb extension", () => {
 		await x.cmd("resume"); // take it back explicitly
 		process.env.CLIMB_LEASE_ID = "other-process";
 		await expect(other.tool("climb_experiment", { lever: "x", hypothesis: "", prediction: "" })).rejects.toThrow("Another omp/pi session");
+		// Nor does a new goal take a live driver's checkout: it is told to climb in its own checkout.
+		const goals = state().goals.size;
+		await other.cmd("make it faster too");
+		expect(other.notes.at(-1)).toContain("Another live session is climbing this checkout");
+		expect(state().goals.size).toBe(goals);
 		delete process.env.CLIMB_LEASE_ID;
 	});
 

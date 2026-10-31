@@ -2012,6 +2012,15 @@ export default async function climb(pi: ExtensionAPI) {
 			if (L.roots(st).length >= X.MAX_GOALS)
 				return ctx.ui.notify(`${X.MAX_GOALS} goals already active; finish one (/climb done <goal>) first. Focus beats breadth.`, "error");
 			if (!(await head(root))) return ctx.ui.notify("climb needs at least one commit.", "error");
+			// A live session already climbing this checkout shares its tree, its benchmarks and its ledger: a second goal
+			// taking the lease mid-measurement (a Claude Code session in voice's checkout, during an omp x6) breaks both.
+			if (!lease(root, ctx)) {
+				const busy = L.active(st).find(x => x.open);
+				return ctx.ui.notify(
+					`Another live session is climbing this checkout${busy?.open ? ` (${busy.open.id} open on ${busy.id})` : ""}. Climbs in one checkout share its tree and benchmarks: start this one in its own checkout (git worktree add <path> HEAD, then /climb there), or run /climb resume here to take the climb over.`,
+					"error",
+				);
+			}
 			await ensureExcluded(root);
 			const id = X.slug(intent, new Set(st.goals.keys()));
 			append(root, { ts: L.now(), kind: "goal", goal: id, intent, cfg: { poke_max, beat_s }, harness });
