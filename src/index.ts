@@ -29,8 +29,9 @@ const DIRECT = " Call it directly, not from eval or a script: measuring can outl
 const RESUMES = " The runs it finished count: climb_measure resumes from them.";
 // An instrument that keeps outputs per run (voice's call recordings: 9 GB a day) fills a disk over nights of measuring.
 const DISK_MIN = 2 * 2 ** 30;
-/** The most pairs a streak check takes to see a slide. */
+/** The most pairs a streak check takes to see a slide, and the time they may take (fewer pairs for a slow metric). */
 const SLIDE_PAIRS = 20;
+const SLIDE_BUDGET_MS = 40 * 60_000;
 /** Free bytes on a directory's disk (replaceable, like L.clock, for tests). */
 /** A failed run (a crash, or no number: an API that rate-limited or blipped) is retried once, after a pause: an instant
  *  retry hits the same outage (voice's control failed when its router bench printed NaN three times in a row). */
@@ -2022,7 +2023,11 @@ export default async function climb(pi: ExtensionAPI) {
 					// until it settles (clearly slid, or clearly not), up to SLIDE_PAIRS: a 6-pair check of a ±28% jury proved
 					// nothing, and its "hold" let platinum's preference slide from 50 to ~38 over ten keeps.
 					const held = g.card.metrics.map(m => ({ ...m, hold: true }));
-					const sp = await paired(root, anchor.head, held, g.id, signal, t => say(t && `the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)}, in pairs: ${t}`), undefined, SLIDE_PAIRS);
+					// Its pairs fit a time budget: voice's 4-minute judge, one run at a time, could take 20 pairs (2.7 h).
+					const traced = T.read(root);
+					const pairMs = Math.max(...held.map(m => (2 * (T.runMs(traced, g.id, m.name) ?? 0)) / Math.min(2, X.slots(m))));
+					const cap = pairMs > 0 ? Math.max(X.STREAK, Math.min(SLIDE_PAIRS, Math.floor(SLIDE_BUDGET_MS / pairMs))) : SLIDE_PAIRS;
+					const sp = await paired(root, anchor.head, held, g.id, signal, t => say(t && `the ${anchor.n + 1} proof keeps since ${anchor.head.slice(0, 8)}, in pairs: ${t}`), undefined, cap);
 					if (typeof sp === "string") throw new Error(`The check of the streak of proof keeps against ${anchor.head.slice(0, 8)} failed; nothing was decided and ${exp.id} stays open:\n${sp}\nFlaky: call climb_measure again.`);
 					if (sp) {
 						const sv = X.pairedVerdict(held, sp);
