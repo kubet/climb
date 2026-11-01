@@ -2233,15 +2233,19 @@ export default async function climb(pi: ExtensionAPI) {
 			const root = await needRoot(ctx);
 			holder(root, ctx);
 			const st = load(root);
-			// A finished part's lessons still serve its siblings: any known goal can learn.
-			const g = p.goal && st.goals.has(p.goal) ? st.goals.get(p.goal)! : pick(st, p.goal);
+			// A finished part's lessons still serve its siblings: any known goal can learn. A finding recorded right after
+			// its goal closed (a worker's last act on an achieved goal: pry lost an OAuth finding this way) lands on the most
+			// recent goal, done or not, rather than being thrown away for "no active goal".
+			const recent = () => [...st.goals.values()].sort((a, b) => Math.max(b.workSeq, b.seq) - Math.max(a.workSeq, a.seq))[0];
+			const g = p.goal && st.goals.has(p.goal) ? st.goals.get(p.goal)! : !p.goal && !L.active(st).length && st.goals.size ? recent() : pick(st, p.goal);
+			const closed = g.done ? ` (${g.id} is closed, ${g.done.result}; the finding is kept on its record)` : "";
 			const text = p.text?.trim() ?? "";
 			if (!text || text.length > 600) throw new Error("A finding is one or two sentences (1-600 characters).");
 			if (!["fact", "trap", "dead-end"].includes(p.kind)) throw new Error('kind is "fact", "trap" or "dead-end".');
 			if (L.knowledge(st, g).some(l => l.text === text)) return ok(`Already recorded for ${g.id}.`);
 			append(root, { ts: L.now(), kind: "learn", goal: g.id, type: p.kind, text, evidence: p.evidence?.trim() || undefined });
 			const n = L.knowledge(load(root), L.rootOf(load(root), g)).length;
-			return ok(`Recorded ${p.kind} for ${g.id} (${n} findings in this goal's tree).`);
+			return ok(`Recorded ${p.kind} for ${g.id} (${n} findings in this goal's tree)${closed}.`);
 		}),
 	});
 

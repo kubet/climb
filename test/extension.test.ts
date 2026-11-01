@@ -1503,6 +1503,37 @@ describe("acceptance review", () => {
 		}
 	});
 
+	test("a finding recorded after its goal closes is kept on that goal, not thrown away for no active goal", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-learnclose-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "learnclose");
+			await z.load();
+			await z.cmd("shrink work");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "cat work.txt", dir: "down", target: 50, noise: 0.05 }] });
+			z.h.judge = "VERDICT: achieved\nUNMET: none\nNEXT: none\nNEXT GOAL: none";
+			await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" });
+			await run("echo 40 > work.txt && git commit -qam halve");
+			expect(await z.tool("climb_measure", {})).toContain("GOAL ACHIEVED");
+			expect(L.active(L.fold(L.read(d)))).toHaveLength(0);
+			// The worker's last act: record a finding, with no goal named. It must not be lost.
+			const out = await z.tool("climb_learn", { kind: "fact", text: "a durable fact found while finishing the goal" });
+			expect(out).toContain("Recorded fact for g-shrink-work");
+			expect(out).toContain("is closed, achieved");
+			expect(L.fold(L.read(d)).goals.get("g-shrink-work")!.learned.map(l => l.text)).toContain("a durable fact found while finishing the goal");
+			// A truly empty ledger still refuses.
+			const e2 = fs.mkdtempSync(path.join(os.tmpdir(), "climb-empty-"));
+			await exec("bash", ["-c", "git init -q && git config user.email t@t && git config user.name t && echo 1 > a && git add -A && git commit -qm i"], { cwd: e2 });
+			const y = host(e2, "main", "empty");
+			await y.load();
+			await expect(y.tool("climb_learn", { kind: "fact", text: "x" })).rejects.toThrow("No active climb goal");
+			fs.rmSync(e2, { recursive: true, force: true });
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	test("an achieved goal continues as the next goal the acceptance review proposes; none means it is finished", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-continue-"));
 		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
