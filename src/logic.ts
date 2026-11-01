@@ -681,7 +681,7 @@ export function judgePrompt(st: State, g: Goal, tail: Entry[], gitLog: string, e
 		"Diagnose WHY there is no progress: wrong lever; broken or noisy metric; blocked environment; goal needs decomposition (climb_split into parts with their own scorecards); grid-search trap (same idea repeated, or a recorded dead end retried); target unreachable by code alone; time lost to refused calls, crashing or slow instruments. Use the conversation so far as evidence.",
 		"Answer in exactly this format:",
 		"VERDICT: continue|pivot|stuck",
-		"stuck means NEXT is something only the human can do: give credentials or access, spend money, or make a choice that is theirs (between finished options, or a change of scope). If the worker can still act (put an unchecked requirement on a scorecard or a part of its own, steady a noisy instrument, try another lever, ask the acceptance review's question with a new check), the verdict is pivot, and NEXT is that action. A stuck verdict stops the loop until the human answers: never use it for work the worker has not done.",
+		"stuck means NEXT is something ONLY the human can do: give credentials or access, spend money, or make a choice that is theirs (between finished options, or a change of scope). Filing, writing, running, building, fixing, documenting or reporting anything is the worker's job — never stuck, however tedious or however a README phrases it. If the worker can still act (do that work, put an unchecked requirement on a scorecard or a part of its own, steady a noisy instrument, try another lever, ask the acceptance review's question with a new check), the verdict is pivot, and NEXT is that action. A stuck verdict stops the loop until the human answers, so the extension overrides a stuck whose NEXT reads as worker-doable back to pivot: never use it for work the worker has not done.",
 		"DIAGNOSIS: <one or two sentences>",
 		"NEXT: <one concrete next action for the worker>",
 	].join("\n\n");
@@ -730,6 +730,36 @@ export function parseJudge(text: string): { verdict: Verdict; diagnosis: string;
 		diagnosis: field("DIAGNOSIS") ?? text.trim().slice(0, 400),
 		next: field("NEXT") ?? "re-evaluate the lever choice",
 	};
+}
+
+/** A "stuck" verdict parks the climb on the human and idles the worker, so it is only honored when NEXT truly
+ *  needs the human: a credential or access to hand over, money to spend, or a choice that is theirs. Work the worker
+ *  can carry out itself — file, write, run, build, fix — is NEVER human-only, however the judge phrased the rest: the
+ *  agent drives and does it, rather than the climb waiting on the user (a judge once called "file the six reports"
+ *  STUCK and parked a climb at 86%). Biased to drive: anything that is not plainly human-only comes back false. */
+export function humanOnly(next: string, diagnosis = ""): boolean {
+	const n = next.toLowerCase();
+	const all = `${n} ${diagnosis.toLowerCase()}`;
+	// Things the worker categorically cannot do — hand over a secret it does not have, or spend money — park the
+	// climb even when the sentence also names work, because the work is blocked on them.
+	if (
+		/\.env\b/.test(all) ||
+		/\b(credential|password|passphrase|api[ -]?key|secret|token|ssh key|private key|grant (me |us |the )?(access|permission)|give (me |us )?access|provide [^.]*\b(access|credential|key|token|secret)|sign ?in|log ?in|oauth|2fa|mfa|pay|pays|paid|spend|purchas|\bbuy\b|billing|budget|subscri|upgrade (the )?plan|quota|licen[sc]e|fund)\b/.test(
+			all,
+		)
+	)
+		return true;
+	// Work the worker can carry out itself — whatever else the diagnosis says — is the agent's job, not the human's.
+	if (
+		/\b(file|writ|creat|add|implement|code|build|run|ran|fix|refactor|commit|submit|generat|produc|document|draft|record|upload|configur|install|test|measur|benchmark|verif|investigat|debug|split|scorecard|experiment|edit|lever|put|re-?measure|re-?run|re-?baseline|steady|try another)\b/.test(
+			n,
+		)
+	)
+		return false;
+	// What is left is honored as stuck only when it is a choice that is the human's, or an explicit hand-off to them.
+	return /\b(decide|choose|pick|which option|your (call|decision|choice)|scope|reprioriti|priorit|approve|approval|product decision|business|human|operator|owner|maintainer|the user|ask you|needs you|only you)\b/.test(
+		all,
+	);
 }
 
 export function slug(intent: string, taken: Set<string>): string {

@@ -1243,6 +1243,13 @@ export default async function climb(pi: ExtensionAPI) {
 			const reply = await sideTurn(turn, promptText);
 			mark(true);
 			const j = X.parseJudge(reply);
+			// The agent drives: a "stuck" whose NEXT is work the worker can do (file, write, run, build, fix) is not
+			// stuck — it becomes a pivot so the climb goes on, never parking the worker on the user. Only a real
+			// human-only need (a credential, money, a choice) parks it.
+			if (j.verdict === "stuck" && !X.humanOnly(j.next, j.diagnosis)) {
+				ctx.ui?.notify?.(`climb ${id}: the judge said stuck, but its next step is work the worker can do — driving on instead of waiting on you.`, "info");
+				j.verdict = "pivot";
+			}
 			append(root, { ts: L.now(), kind: "judge", goal: id, by: "judge", ...j });
 			const msg = `[climb JUDGE ${id}] ${j.verdict.toUpperCase()}: ${j.diagnosis}\nNEXT: ${j.next}`;
 			if (j.verdict === "stuck") ctx.ui?.notify?.(`climb ${id} is STUCK and needs you: ${j.diagnosis}`, "warning");
@@ -2153,13 +2160,18 @@ export default async function climb(pi: ExtensionAPI) {
 			const top = L.rootOf(st0, g0);
 			const g = top.stallPending && !g0.stallPending && g0.streak < X.DROP_STREAK ? top : g0;
 			const independent = hasJudge(ctx);
-			const escalate = p.verdict === "stuck" && independent;
+			// The agent drives: a "stuck" whose NEXT the worker can do itself is not stuck — it is recorded as a pivot
+			// and the worker does the work. Only a real human-only need (credential, money, a choice) parks the climb,
+			// and where an independent judge runs it confirms that.
+			const realStuck = p.verdict === "stuck" && X.humanOnly(p.next, p.diagnosis);
+			const escalate = realStuck && independent;
+			const verdict = p.verdict === "stuck" && !realStuck ? "pivot" : escalate ? "pivot" : p.verdict;
 			append(root, {
 				ts: L.now(),
 				kind: "judge",
 				goal: g.id,
 				by: independent ? "worker" : "fallback",
-				verdict: escalate ? "pivot" : p.verdict,
+				verdict,
 				diagnosis: p.diagnosis,
 				next: p.next,
 			});
@@ -2169,7 +2181,9 @@ export default async function climb(pi: ExtensionAPI) {
 			}
 			const st2 = refresh(ctx, root);
 			const after = st2.goals.get(g.id)!;
-			return ok(p.verdict === "stuck" ? "Recorded as STUCK: the loop rests until a human or a new commit moves it." : `Recorded. ${X.nextAction(st2, after)}`);
+			if (p.verdict === "stuck" && !realStuck)
+				return ok(`That next step is work you can do, so it is not stuck — recorded as a pivot. ${X.nextAction(st2, after)}`);
+			return ok(verdict === "stuck" ? "Recorded as STUCK: the loop rests until a human or a new commit moves it." : `Recorded. ${X.nextAction(st2, after)}`);
 		}),
 	});
 

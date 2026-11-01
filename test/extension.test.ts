@@ -317,6 +317,23 @@ describe("climb extension", () => {
 		expect((await x.emit("session_stop"))?.decision).toBe("block");
 	});
 
+	test("a 'stuck' whose next step the worker can do is driven on, not parked", async () => {
+		// The judge called filing reports STUCK (pry sat at 86% · STUCK, needs you: file the six reports). Filing is
+		// the worker's job: the extension overrides it back to pivot and never parks the climb on the user.
+		const judges = () => ledger().filter(e => e.kind === "judge" && (e as L.JudgeE).by === "judge") as L.JudgeE[];
+		const before = judges().length;
+		const notesAt = x.notes.length;
+		x.h.judge = "VERDICT: stuck\nDIAGNOSIS: the six reports are not filed\nNEXT: Human action only: file the six reports per the README";
+		await x.cmd("judge");
+		await until(() => judges().length > before);
+		expect(judges().at(-1)!.verdict).toBe("pivot");
+		const fresh = x.notes.slice(notesAt);
+		expect(fresh.some(n => n.includes("work the worker can do"))).toBe(true);
+		expect(fresh.some(n => n.includes("STUCK"))).toBe(false);
+		// Not parked: the worker is still held to the climb.
+		expect((await x.emit("session_stop"))?.decision).toBe("block");
+	});
+
 	test("hitting every target closes the goal and releases the worker", async () => {
 		await x.tool("climb_experiment", { lever: "delete", hypothesis: "less", prediction: "-60%" });
 		await commit(5, "delete more");

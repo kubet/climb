@@ -75,6 +75,23 @@ describe("logic", () => {
 		expect(X.parseJudge("garbage").verdict).toBe("continue");
 	});
 
+	test("humanOnly: work the worker can do is never stuck; only a real human need parks the climb", () => {
+		// The fumble that triggered this: a judge called filing reports STUCK and parked a climb at 86%.
+		expect(X.humanOnly("Human action only: file the six reports per FILE-NOW/00-READ-ME-FIRST.md", "the reports must be filed")).toBe(false);
+		expect(X.humanOnly("write up the findings and commit them")).toBe(false);
+		expect(X.humanOnly("run the benchmark again and record the result")).toBe(false);
+		expect(X.humanOnly("fix the failing test, then re-measure")).toBe(false);
+		// A genuine human-only need still parks.
+		expect(X.humanOnly("provide a GitHub token with repo access", "the deploy needs a credential")).toBe(true);
+		expect(X.humanOnly("decide which of the three finished designs to ship")).toBe(true);
+		expect(X.humanOnly("ask the human", "needs a human")).toBe(true);
+		// Money or a secret the worker cannot supply parks even when the sentence also names work.
+		expect(X.humanOnly("purchase a paid Daytona plan to run the larger benchmark")).toBe(true);
+		expect(X.humanOnly("update the .env file with the production key")).toBe(true);
+		// But a human's mere preference ("decide") yields to work the worker can do: it drives on.
+		expect(X.humanOnly("decide on a lever and run the experiment")).toBe(false);
+	});
+
 	test("instrument detection freezes executed scripts, not the data being optimized", () => {
 		const t = new Set(["bench.py", "work.txt", "scripts/m.sh", "tests/a.py", "solve.py", "test_primes.py"]);
 		expect(X.instrumentFiles("python3 bench.py --n 3", t)).toEqual(["bench.py"]);
