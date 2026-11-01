@@ -861,7 +861,25 @@ export default async function climb(pi: ExtensionAPI) {
 			return { unmet: r, closedUp: [] };
 		}
 		append(root, { ts: L.now(), kind: "done", goal: g.id, result: "achieved", values, unreviewed: typeof r === "string" ? r : undefined });
-		return { closedUp: await rollUp(ctx, root, g.id) };
+		const closedUp = await rollUp(ctx, root, g.id);
+		// A climb only stops when its user stops it: an achieved top goal starts the next one the review proposes
+		// (pry's closed as achieved, and its user started "climb harder, more" by hand a minute later).
+		const top = L.rootOf(load(root), load(root).goals.get(g.id) ?? g);
+		if (typeof r === "object" && r.nextGoal && load(root).goals.get(top.id)?.done && !load(root).paused) continueWith(ctx, root, top, r.nextGoal);
+		return { closedUp };
+	}
+
+	/** The next goal after an achieved one: started at once, with the same heartbeat, and the worker woken to research it. */
+	function continueWith(ctx: Ctx, root: string, done: L.Goal, intent: string): void {
+		const st = load(root);
+		if (L.roots(st).length >= X.MAX_GOALS) return;
+		const id = X.slug(intent, new Set(st.goals.keys()));
+		append(root, { ts: L.now(), kind: "goal", goal: id, intent, cfg: done.cfg, why: `continues ${done.id}, achieved: the acceptance review's next goal`, harness });
+		mine.add(id);
+		const g = refresh(ctx, root).goals.get(id)!;
+		ensureTimer(ctx);
+		ctx.ui?.notify?.(`climb ${done.id} achieved; it continues as ${id}: "${intent}". /climb done ${id} stops it.`, "info");
+		deliver(ctx, `[climb] ${done.id} is achieved, and the climb goes on: ${id}, "${intent}".\n${X.researchBrief(g)}`, true);
 	}
 	/** Holds that look regressed against the card they were set on, checked against that card's commit
 	 *  interleaved: the machine drifts between then and now, and only pairs tell drift from a regression.
@@ -1191,7 +1209,7 @@ export default async function climb(pi: ExtensionAPI) {
 
 	/** Before a goal closes on met targets, an independent check that its intent is met too: a scorecard
 	 *  can be achieved while a requirement of the intent never made it onto it. A string: why it could not run. */
-	async function review(ctx: Ctx, root: string, g: L.Goal): Promise<{ achieved: boolean; unmet: string; next: string } | string> {
+	async function review(ctx: Ctx, root: string, g: L.Goal): Promise<{ achieved: boolean; unmet: string; next: string; nextGoal?: string } | string> {
 		const turn = ctx.runEphemeralTurn?.bind(ctx);
 		if (!turn) return "no independent review on this host";
 		const t0 = performance.now();

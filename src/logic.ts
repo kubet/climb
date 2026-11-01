@@ -703,10 +703,11 @@ export function reviewPrompt(st: State, g: Goal, gitLog: string): string {
 		"VERDICT: achieved|unmet",
 		"UNMET: <the explicit requirements not met or not checked, or none>",
 		"NEXT: <one concrete next action for the worker>",
+		"NEXT GOAL: <when achieved: the next, more ambitious goal in the direction the intent points (one sentence the worker can climb: what gets better, and roughly how much), or none if the intent is truly finished>",
 	].join("\n\n");
 }
 
-export function parseReview(text: string): { achieved: boolean; unmet: string; next: string } {
+export function parseReview(text: string): { achieved: boolean; unmet: string; next: string; nextGoal?: string } {
 	const field = (k: string) => text.match(new RegExp(`^[\\s*_#]*${k}[*_]*\\s*:[*_\\s]*(.+?)\\s*$`, "im"))?.[1];
 	const unmetLine = field("UNMET") ?? "";
 	// A clear negative ("unmet", `unmet`, "not achieved", "missing") holds the goal open; anything else,
@@ -716,6 +717,7 @@ export function parseReview(text: string): { achieved: boolean; unmet: string; n
 		achieved: !/unmet|\bnot\b|\bno\b|missing|incomplete|unsatisfied/.test(v),
 		unmet: unmetLine || "unspecified",
 		next: (field("NEXT") ?? "put the missing requirement on the scorecard").replace(/[.\s]+$/, ""),
+		nextGoal: ((g: string | undefined) => (g && !/^(none|n\/a|-)\b/i.test(g) ? g.replace(/[.\s]+$/, "") : undefined))(field("NEXT GOAL")),
 	};
 }
 
