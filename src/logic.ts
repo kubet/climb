@@ -252,7 +252,7 @@ export const reached = (g: Goal) => !!g.card && !g.done && g.card.metrics.some(m
 /** Held open by the acceptance review with every target met (or every part achieved): what the review
  *  found missing is all that is left. A split goal's old scorecard is history. Or every target is met
  *  and only a confirmation is missing. */
-const finishing = (st: State, g: Goal) => !umbrella(st, g) && !g.done && !g.open && (!!g.reviewed || (reached(g) && !parts(st, g).length));
+export const finishing = (st: State, g: Goal) => !umbrella(st, g) && !g.done && !g.open && (!!g.reviewed || (reached(g) && !parts(st, g).length));
 
 /** "1/3": parts achieved of those still counted (abandoned parts are not). */
 const partsDone = (st: State, g: Goal) => {
@@ -278,10 +278,12 @@ export function statusLine(st: State, nowMs = clock.ms()): string | undefined {
 		const ps = parts(st, g).length;
 		if (!g.card && !ps) return `${g.id}: researching (${g.probes.filter(p => p.value !== undefined).length} probes)`;
 		const due = g.lastBeat ? Math.max(0, g.cfg.beat_s - (nowMs - epoch(g.lastBeat.ts)) / 1000) : g.cfg.beat_s;
-		const flag = stuck(g) ? " STUCK" : g.stallPending ? " STALL" : "";
+		// Say what is wanted, not only the state: "100% · review holds it · STUCK" left the user guessing.
+		const flag = stuck(g) ? ` · STUCK, needs you: ${clip(g.judge!.next.replace(/[.\s]+$/, ""), 80)}` : g.stallPending ? " · STALL, judge reviewing" : "";
 		const busy = openIn(st, g);
 		const where = busy ? ` · ${busy.open!.id}${busy !== g ? ` on ${busy.id}` : ""}` : "";
-		return `${g.id} ${goalPct(st, g)}%${ps ? ` · ${partsDone(st, g)} parts achieved` : ""}${g.reviewed && !split ? " · review holds it" : ""} · stale ${g.lastBeat?.stale ?? 0}/${g.cfg.poke_max}${where} · beat ${Math.ceil(due / 60)}m${flag}`;
+		const held = g.reviewed && !split ? ` · targets met, the review wants: ${clip(g.reviewed.next.replace(/[.\s]+$/, ""), 60)}` : "";
+		return `${g.id} ${goalPct(st, g)}%${ps ? ` · ${partsDone(st, g)} parts achieved` : ""}${held} · stale ${g.lastBeat?.stale ?? 0}/${g.cfg.poke_max}${where} · next beat ${Math.ceil(due / 60)}m${flag}`;
 	});
 	return `⛰ ${st.paused ? "PAUSED " : ""}${shown.join(" | ")}`;
 }
@@ -678,7 +680,8 @@ export function judgePrompt(st: State, g: Goal, tail: Entry[], gitLog: string, e
 		...(efficiency ? [`Where the time went (traced by the extension):\n${efficiency}`] : []),
 		"Diagnose WHY there is no progress: wrong lever; broken or noisy metric; blocked environment; goal needs decomposition (climb_split into parts with their own scorecards); grid-search trap (same idea repeated, or a recorded dead end retried); target unreachable by code alone; time lost to refused calls, crashing or slow instruments. Use the conversation so far as evidence.",
 		"Answer in exactly this format:",
-		"VERDICT: continue|pivot|stuck   (stuck = only a human can unblock this)",
+		"VERDICT: continue|pivot|stuck",
+		"stuck means NEXT is something only the human can do: give credentials or access, spend money, or make a choice that is theirs (between finished options, or a change of scope). If the worker can still act (put an unchecked requirement on a scorecard or a part of its own, steady a noisy instrument, try another lever, ask the acceptance review's question with a new check), the verdict is pivot, and NEXT is that action. A stuck verdict stops the loop until the human answers: never use it for work the worker has not done.",
 		"DIAGNOSIS: <one or two sentences>",
 		"NEXT: <one concrete next action for the worker>",
 	].join("\n\n");

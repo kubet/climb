@@ -1503,6 +1503,41 @@ describe("acceptance review", () => {
 		}
 	});
 
+	test("auto-steer: a review hold the worker leaves unanswered for poke_max beats becomes a part of its own", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-steer-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "steer");
+			await z.load();
+			await z.cmd("shrink work and fix the unicode bug");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "cat work.txt", dir: "down", target: 50, noise: 0.05 }] });
+			z.h.judge = "VERDICT: unmet\nUNMET: the unicode bug was never on the scorecard\nNEXT: add a check that the unicode bug is fixed";
+			await z.tool("climb_experiment", { lever: "halve", hypothesis: "", prediction: "" });
+			await run("echo 40 > work.txt && git commit -qam halve");
+			expect(await z.tool("climb_measure", {})).toContain("THE INTENT IS NOT DONE");
+			// The worker does nothing; the heartbeat counts stale beats until poke_max.
+			const beats = () => L.read(d).filter(e => e.kind === "beat").length;
+			const beat = async () => {
+				const n = beats();
+				await z.cmd("beat");
+				await until(() => beats() > n);
+			};
+			for (let i = 0; i < 4; i++) await beat();
+			await until(() => L.fold(L.read(d)).goals.get("g-shrink-work-and-fix")!.children.length > 0);
+			const st = L.fold(L.read(d));
+			const part = st.goals.get(st.goals.get("g-shrink-work-and-fix")!.children[0])!;
+			expect(part.intent).toContain("add a check that the unicode bug is fixed");
+			expect(part.why).toContain("auto-steer");
+			expect(z.notes.some(n => n.includes("climb auto-steer"))).toBe(true);
+			// It steers once per review: more beats do not add more parts.
+			for (let i = 0; i < 4; i++) await beat();
+			expect(L.fold(L.read(d)).goals.get("g-shrink-work-and-fix")!.children).toHaveLength(1);
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	test("a goal the review holds open can verify a check that already passes: the scorecard asks the review again", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-accept-verify-"));
 		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
@@ -1567,7 +1602,7 @@ describe("acceptance review", () => {
 			expect(next).toContain("Every part is achieved, yet the goal is not achieved");
 			expect(next).toContain("nobody listened to a real call → add a part that grades a real call. Give that a part");
 			expect(next).not.toContain("Keep climbing");
-			expect(X.statusLine(s)).toContain("2/2 parts achieved · review holds it");
+			expect(X.statusLine(s)).toContain("2/2 parts achieved · targets met, the review wants: add a part that grades a real call");
 			z.h.judge = yes;
 			await z.tool("climb_split", { goal: root, parts: [{ intent: "grade a real call" }] });
 			expect(X.nextAction(L.fold(L.read(d)), L.fold(L.read(d)).goals.get(root)!)).toContain("Split into parts: g-grade-a-real-call");

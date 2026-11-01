@@ -1106,6 +1106,25 @@ export default async function climb(pi: ExtensionAPI) {
 		}
 	}
 
+	/** A part for the requirement the acceptance review found unchecked, under the goal it held open (or beside it, at the
+	 *  deepest level). False when there is nothing to steer: no review hold, a part for it exists, or no room for one. */
+	function steer(ctx: Ctx, root: string, top: L.Goal): boolean {
+		const st = load(root);
+		const held = L.subtree(st, top).find(x => x.reviewed && X.finishing(st, x));
+		if (!held?.reviewed) return false;
+		const mark = `auto-steer ${held.reviewed.ts}`;
+		const home = L.depth(st, held) < X.MAX_DEPTH ? held : held.parent ? st.goals.get(held.parent) : undefined;
+		if (!home || L.subtree(st, home).some(x => x.why?.startsWith(mark)) || L.openParts(st, home).length >= X.MAX_PARTS) return false;
+		const unmet = held.reviewed.diagnosis.replace(/^Every (target is met|part is achieved), but not the intent: /, "");
+		const intent = `${held.reviewed.next.replace(/[.\s]+$/, "")} (the acceptance review of ${held.id}: ${unmet})`.slice(0, 600);
+		const id = X.slug(intent, new Set(st.goals.keys()));
+		append(root, { ts: L.now(), kind: "goal", goal: id, intent, cfg: home.cfg, parent: home.id, why: `${mark}: the review held ${held.id} open and nothing answered it`, harness });
+		const part = refresh(ctx, root).goals.get(id)!;
+		ctx.ui?.notify?.(`climb auto-steer: the acceptance review held ${held.id} open and the worker had not answered it; ${id} is now a part that checks it.`, "info");
+		deliver(ctx, `[climb auto-steer] The acceptance review held ${held.id} open: ${unmet}. That requirement is now a part of ${home.id}: ${id}.\n${X.researchBrief(part)}`, true);
+		return true;
+	}
+
 	async function beat(ctx: Ctx, root: string, g: L.Goal, idle: boolean, paused: boolean): Promise<void> {
 		// The heartbeat audits the ledger; it never measures. Measuring here would race the
 		// worker's edits and its benchmarks, and only kept results move the climb anyway.
@@ -1122,6 +1141,10 @@ export default async function climb(pi: ExtensionAPI) {
 
 		const after = load(root).goals.get(g.id)!;
 		if (paused || L.stuck(after)) return;
+		// Auto-steer: a goal the acceptance review held open, while the worker lets the stale beats pile up, gets a part
+		// for the review's unmet requirement, so the climb goes on without waiting for anyone (pry sat at 100% · review
+		// holds it · stale 20/3 until a judge called it STUCK).
+		if (stale >= g.cfg.poke_max && !after.stallPending && steer(ctx, root, after)) return;
 		if (stale >= g.cfg.poke_max && !after.stallPending) {
 			append(root, { ts: L.now(), kind: "stall", goal: g.id, stale });
 			void judge(ctx, root, g.id, "stall");
