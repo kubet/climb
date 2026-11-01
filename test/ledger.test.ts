@@ -92,6 +92,19 @@ describe("logic", () => {
 		expect(X.humanOnly("decide on a lever and run the experiment")).toBe(false);
 	});
 
+	test("concurrency parallelizes into headroom and backs off as load climbs, never below 1 or above want", () => {
+		// A calm 8-core machine runs a metric at its full width.
+		expect(X.concurrency(4, 0, 8)).toBe(4);
+		expect(X.concurrency(4, 4, 8)).toBe(4); // load 4 of 8: still headroom
+		// Load climbing past the cores backs the width off toward 1.
+		expect(X.concurrency(4, 10, 8)).toBe(2);
+		expect(X.concurrency(4, 11.6, 8)).toBe(1);
+		expect(X.concurrency(4, 37, 8)).toBe(1); // thrashing (two climbs on a 16 GiB Mac): serialize
+		// A serial metric is never touched; a small machine caps below the asked width; the result never exceeds want.
+		expect(X.concurrency(1, 0, 8)).toBe(1);
+		expect(X.concurrency(8, 0, 2)).toBe(3);
+	});
+
 	test("instrument detection freezes executed scripts, not the data being optimized", () => {
 		const t = new Set(["bench.py", "work.txt", "scripts/m.sh", "tests/a.py", "solve.py", "test_primes.py"]);
 		expect(X.instrumentFiles("python3 bench.py --n 3", t)).toEqual(["bench.py"]);

@@ -23,6 +23,8 @@ import * as T from "./trace";
 
 const TICK_MS = 15_000;
 const JUDGE_MS = 5 * 60_000;
+/** Cores on this machine: the headroom parallel measurement launches into (see X.concurrency). */
+const CORES = Math.max(1, os.cpus().length);
 const LEDGER_GUARD = "The climb ledger (.climb/) is append-only and owned by the climb extension. Read it with climb_status.";
 // Measuring runs every sample of every metric: it can outlast a script's or eval cell's timeout (omp's eval stops at one hour).
 const DIRECT = " Call it directly, not from eval or a script: measuring can outlast their timeouts.";
@@ -414,11 +416,14 @@ export default async function climb(pi: ExtensionAPI) {
 				(ms[m.name] ??= []).push(performance.now() - t0);
 				return { n };
 			};
-			for (let i = 0; i < m.samples; i += k) {
-				const batch = Array.from({ length: Math.min(k, m.samples - i) }, (_, j) => sample(i + j, j));
+			for (let i = 0; i < m.samples; ) {
+				// Launch into the machine's headroom: a metric's full width when it is calm, fewer when load is high.
+				const width = Math.min(k, m.samples - i, X.concurrency(k, os.loadavg()[0], CORES));
+				const batch = Array.from({ length: width }, (_, j) => sample(i + j, j));
 				const done = await Promise.all(batch);
 				if (k > 1) await restore(root);
 				for (const x of done) if (x.n !== undefined) xs.push(x.n);
+				i += width;
 				const bad = done.find(x => x.err);
 				if (bad) {
 					errors.push(bad.err!);
@@ -594,8 +599,10 @@ export default async function climb(pi: ExtensionAPI) {
 							: ((await one(i % 2 ? "b" : "a")) ?? (await one(i % 2 ? "a" : "b")));
 						return failed ?? [v.a!, v.b!];
 					};
-					for (let i = ps.length; i < n && !X.settled(m, ps); i += P) {
-						const batch = Array.from({ length: Math.min(P, n - i) }, (_, j) => pair(i + j, j));
+					for (let i = ps.length; i < n && !X.settled(m, ps); ) {
+						// Pairs at once, into the machine's headroom: back off from P when load is high (each pair is two runs).
+						const width = Math.min(P, n - i, X.concurrency(P, os.loadavg()[0], CORES));
+						const batch = Array.from({ length: width }, (_, j) => pair(i + j, j));
 						for (const [q, r] of (await Promise.all(batch)).entries()) {
 							if (typeof r === "string") {
 								if (i + q === 0 && !Object.keys(out).length && !r.includes("candidate")) return undefined; // the base cannot run it here
@@ -604,6 +611,7 @@ export default async function climb(pi: ExtensionAPI) {
 							ps.push(r);
 							if (baseTree && candTree) T.append(root, { ts: L.now(), kind: "pair", goal, metric: m.name, cmd: cmdId(m.cmd), base: baseTree, cand: candTree, a: r[0], b: r[1] });
 						}
+						i += width;
 					}
 					out[m.name] = ps;
 					// The base's side is an unbiased sample of its tree: when a drop restores it, the next control reuses it.

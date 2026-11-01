@@ -161,6 +161,12 @@ export function pairedVerdict(metrics: Metric[], pairs: Record<string, [number, 
 
 /** Runs a metric may have going at once: parallel true is 2 (a pair's two sides), a number is that many (up to 8). */
 export const slots = (m: Metric) => (m.parallel === true ? 2 : typeof m.parallel === "number" && m.parallel > 1 ? Math.min(8, Math.floor(m.parallel)) : 1);
+/** How many of `want` parallel runs to launch right now, given the machine's 1-minute load average and its core
+ *  count: full width while there is headroom, backing off toward 1 as load climbs past ~1.5× the cores.
+ *  Oversubscribing a saturated machine only slows every run and inflates its noise — two climbs plus the live
+ *  servers on a 16 GiB Mac hit load 37 — which costs more re-runs than the parallelism ever saved. Never below 1,
+ *  never above `want`, so a serial metric (want 1) is untouched and a calm machine runs at full width. */
+export const concurrency = (want: number, loadavg: number, cpus: number) => Math.max(1, Math.min(want, Math.round(1.5 * Math.max(1, cpus) - Math.max(0, loadavg))));
 
 /** Pairs a close call gets: from 3, pairs stop as soon as they decide with room to spare (settled). */
 export const PAIRS = 6;
