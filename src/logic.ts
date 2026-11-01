@@ -601,7 +601,9 @@ export function instrumentFiles(cmd: string, tracked: Set<string>): string[] {
  *  extension, in script position or written with a directory (not `console.log` in inline code). */
 export const scriptPaths = (cmd: string) =>
 	executed(cmd)
-		.filter(({ tok, first, afterFlag }) => /\.[A-Za-z]\w{0,4}$/.test(tok) && !tok.startsWith("/") && !afterFlag && (first || tok.includes("/")))
+		// A token built from a shell variable or substitution ($p, bench/$p-proof.ts) resolves only at run time, so it
+		// is not a static path to check for existence — the proof is executed next, which catches a truly broken one.
+		.filter(({ tok, first, afterFlag }) => /\.[A-Za-z]\w{0,4}$/.test(tok) && !tok.startsWith("/") && !tok.includes("$") && !afterFlag && (first || tok.includes("/")))
 		.map(({ tok }) => tok.replace(/^\.\//, ""));
 
 /** A command whose runner discovers what to run itself (test filters, package scripts, make). */

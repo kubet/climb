@@ -59,6 +59,10 @@ describe("logic", () => {
 		expect(X.scriptPaths("bash checks/fixed.sh && python3 ./tests/t_x.py -q && python3 check.py")).toEqual(["checks/fixed.sh", "tests/t_x.py", "check.py"]);
 		expect(X.scriptPaths(`bun -e 'console.log(1); import x from "./src/a"'`)).toEqual([]);
 		expect(X.scriptPaths("test \"$(cat fixed.txt)\" = yes")).toEqual([]);
+		// A path built from a shell variable is not a static file to check — the proof is run to validate it (a worker's
+		// `bench/$p-proof.ts` loop was being refused as "does not exist yet" over and over).
+		expect(X.scriptPaths("bun --env-file=.env bench/$p-proof.ts")).toEqual([]);
+		expect(X.scriptPaths("for p in glance pre; do test \"$(bun bench/$p-proof.ts)\" -eq 0; done")).toEqual([]);
 		expect(X.absolutePaths("bun bench/isolated.ts --backend=/tmp/a/b --env-file=/tmp/c.env | tail -1")).toEqual(["/tmp/a/b", "/tmp/c.env"]);
 	});
 
