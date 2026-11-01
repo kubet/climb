@@ -659,7 +659,9 @@ export default async function climb(pi: ExtensionAPI) {
 	/** Frozen instrument files changed between `from` and HEAD. */
 	async function instrumentChanged(root: string, card: L.CardE, from: string | undefined): Promise<string[]> {
 		if (!from || !card.frozen?.length) return [];
-		const r = await git(root, "diff", "--name-only", `${from}..HEAD`);
+		// A file added under a frozen folder is not the instrument (what the commands run existed when it was frozen):
+		// voice froze bench/, where every new proof lives, and each new proof forced a re-baseline.
+		const r = await git(root, "diff", "--name-only", "--diff-filter=a", `${from}..HEAD`);
 		return r.code === 0 ? X.touchedFrozen(r.stdout.split("\n").filter(Boolean), card.frozen) : [];
 	}
 

@@ -329,6 +329,26 @@ describe("climb extension", () => {
 		expect(status).toMatch(/experiments: \d+ \(\d+ kept/);
 	});
 
+	test("a new file under a frozen folder (a new proof beside the bench) is not an instrument change", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-newproof-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && mkdir bench && printf 'cat work.txt\n' > bench/run.sh && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "newproof");
+			await z.load();
+			await z.cmd("faster");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "bash bench/run.sh", dir: "down", target: 10, noise: 0.05 }], frozen: ["bench/"] });
+			await run("echo 'test -f fixed' > bench/new-proof.sh && git add -A && git commit -qm proof");
+			expect(await z.tool("climb_experiment", { lever: "fix", hypothesis: "", prediction: "", proof: "bash bench/new-proof.sh" })).toContain("Registered x1");
+			// Editing what is frozen still is a change.
+			await z.tool("climb_measure", { abandon: "test" });
+			await run("printf 'echo 1\n' > bench/run.sh && git commit -qam edit");
+			await expect(z.tool("climb_experiment", { lever: "fix2", hypothesis: "", prediction: "" })).rejects.toThrow("The instrument changed since the scorecard (bench/run.sh)");
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	test("frozen instrument: scripts the metric runs cannot change inside an experiment", async () => {
 		await sh(`printf 'cat work.txt\n' > bench.sh && git add -A && git commit -qm bench`);
 		await x.cmd("halve work again --beat 30m");
