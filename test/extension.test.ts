@@ -1098,7 +1098,7 @@ describe("one run, many numbers; two sides at once", () => {
 			await z.load();
 			await z.cmd("faster");
 			await z.tool("climb_scorecard", { metrics: [{ name: "ms", cmd, dir: "down", target: 10, noise: 0.05, samples: 3, parallel: true }] });
-			expect(L.fold(L.read(d)).goals.get("g-faster")!.card!.metrics[0].parallel).toBe(true);
+			expect(L.fold(L.read(d)).goals.get("g-faster")!.card!.metrics[0].parallel).toBe(2);
 			await z.tool("climb_experiment", { lever: "noop", hypothesis: "", prediction: "" });
 			await run("echo y >> README.md && git commit -qam noop");
 			expect(await z.tool("climb_measure", {})).toContain("paired with the base");
@@ -1256,6 +1256,41 @@ describe("what the stop hook says", () => {
 			fs.rmSync(backend, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("parallel: 4", () => {
+	test("four samples run at once in plain runs, and two pairs at once (four slots) when paired", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-par4-"));
+		const log = path.join(os.tmpdir(), `climb-par4-log-${process.pid}`);
+		const t0 = path.join(os.tmpdir(), `climb-par4-t0-${process.pid}`);
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		const now = `perl -MTime::HiRes=time -e 'printf "%.3f", time'`;
+		fs.writeFileSync(t0, String(Math.floor(Date.now() / 10)));
+		const cmd = `a=$(${now}); sleep 0.2; c=$(perl -MTime::HiRes=time -e 'printf "%d", time*100'); echo "\${CLIMB_SLOT:-x} $a $(${now})" >> ${log}; echo $(( $(cat work.txt) + (c - $(cat ${t0})) / 2 ))`;
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && echo x > README.md && git add -A && git commit -qm init");
+			const z = host(d, "main", "par4");
+			await z.load();
+			await z.cmd("faster");
+			await z.tool("climb_scorecard", { metrics: [{ name: "ms", cmd, dir: "down", target: 10, noise: 0.05, samples: 4, parallel: 4 }] });
+			const spans = () => fs.readFileSync(log, "utf8").trim().split("\n").map(l => l.split(" ")).map(([slot, a, b]) => ({ slot, a: Number(a), b: Number(b) }));
+			// The smoke run is one sample; the A/A's other three ran at once, in slots 0-2.
+			const aa = spans().slice(1);
+			expect(new Set(aa.map(x => x.slot))).toEqual(new Set(["0", "1", "2"]));
+			expect(aa.filter(x => aa.every(y => x.a < y.b && y.a < x.b)).length).toBe(3);
+			fs.writeFileSync(log, "");
+			await z.tool("climb_experiment", { lever: "noop", hypothesis: "", prediction: "" });
+			await run("echo y >> README.md && git commit -qam noop");
+			expect(await z.tool("climb_measure", {})).toContain("paired with the base");
+			// Two pairs at once: four runs overlap, in slots 0-3.
+			const paired = spans().filter(x => x.slot !== "x");
+			expect(new Set(paired.map(x => x.slot))).toEqual(new Set(["0", "1", "2", "3"]));
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+			fs.rmSync(log, { force: true });
+			fs.rmSync(t0, { force: true });
+		}
+	}, 30_000);
 });
 
 describe("paired measurement, crashed", () => {

@@ -157,6 +157,9 @@ export function pairedVerdict(metrics: Metric[], pairs: Record<string, [number, 
 	return { kept: true, regressed: false, reason: `${head}: ${improved.map(fmt).join(", ")}`, stats };
 }
 
+/** Runs a metric may have going at once: parallel true is 2 (a pair's two sides), a number is that many (up to 8). */
+export const slots = (m: Metric) => (m.parallel === true ? 2 : typeof m.parallel === "number" && m.parallel > 1 ? Math.min(8, Math.floor(m.parallel)) : 1);
+
 /** Pairs a close call gets: from 3, pairs stop as soon as they decide with room to spare (settled). */
 export const PAIRS = 6;
 

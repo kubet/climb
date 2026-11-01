@@ -369,26 +369,26 @@ export default async function climb(pi: ExtensionAPI) {
 			const xs: number[] = [];
 			const made = outs.get(m.cmd) ?? [];
 			outs.set(m.cmd, made);
-			for (let i = 0; i < m.samples; i++) {
+			// A parallel metric runs `slots` samples at once, each told its slot ($CLIMB_SLOT) for its port.
+			const k = X.slots(m);
+			/** One sample: its value, or why there is none. */
+			const sample = async (i: number, slot: number): Promise<{ n?: number; err?: string }> => {
 				const t0 = performance.now();
 				if (made[i]) {
 					const n = X.valueOf(made[i].stdout, m.name);
-					if (n === undefined || !Number.isFinite(n)) {
-						errors.push(`${m.name}: no number in output: ${tail(made[i].stdout) || "(empty)"}`);
-						break;
-					}
+					if (n === undefined || !Number.isFinite(n)) return { err: `${m.name}: no number in output: ${tail(made[i].stdout) || "(empty)"}` };
 					T.append(root, { ts: L.now(), kind: "run", ...tag, metric: m.name, cmd: cmdId(m.cmd), ms: 0, code: 0, value: n, shared: true });
-					xs.push(n);
 					(ms[m.name] ??= []).push(ms[metrics.find(o => o.cmd === m.cmd)!.name]?.[i] ?? 0);
-					continue;
+					return { n };
 				}
-				progress?.(`${m.name} run ${i + 1}/${m.samples}`);
-				let r = await run(root, m.cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal);
+				progress?.(`${m.name} run ${i + 1}/${m.samples}${k > 1 ? ` (${k} at once)` : ""}`);
+				const cmd = k > 1 ? `export CLIMB_SLOT=${slot}; ${m.cmd}` : m.cmd;
+				let r = await run(root, cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal);
 				if (numberIn(r, m.name) === undefined && !r.killed && !signal?.aborted) {
-					await restore(root);
+					if (k === 1) await restore(root); // never under a run still going beside it
 					progress?.(`${m.name} run ${i + 1}/${m.samples}: ${r.code === 0 ? "no number" : `exit ${r.code}`}, retrying in ${Math.round(retry.ms / 1000)}s`);
 					await pause(signal);
-					if (!signal?.aborted) r = await run(root, m.cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal, true);
+					if (!signal?.aborted) r = await run(root, cmd, m.timeout_s * 1000, { ...tag, metric: m.name, cmd: cmdId(m.cmd) }, signal, true);
 				}
 				// An operator interrupt is not a verdict: nothing is decided or reverted.
 				if (signal?.aborted)
@@ -397,18 +397,23 @@ export default async function climb(pi: ExtensionAPI) {
 							? "Measurement interrupted; nothing was registered."
 							: `Measurement interrupted; nothing was decided and the experiment stays open.${["result", "recheck"].includes(tag.phase) ? RESUMES : ""}`,
 					);
-				if (r.code !== 0) {
-					errors.push(`${m.name}: exit ${r.code}${r.killed ? " (killed/timeout)" : ""}: ${said(r)}`);
-					break;
-				}
+				if (r.code !== 0) return { err: `${m.name}: exit ${r.code}${r.killed ? " (killed/timeout)" : ""}: ${said(r)}` };
 				made[i] = r;
 				const n = X.valueOf(r.stdout, m.name);
-				if (n === undefined || !Number.isFinite(n)) {
-					errors.push(`${m.name}: no number in output: ${tail(r.stdout) || "(empty)"}`);
+				if (n === undefined || !Number.isFinite(n)) return { err: `${m.name}: no number in output: ${tail(r.stdout) || "(empty)"}` };
+				(ms[m.name] ??= []).push(performance.now() - t0);
+				return { n };
+			};
+			for (let i = 0; i < m.samples; i += k) {
+				const batch = Array.from({ length: Math.min(k, m.samples - i) }, (_, j) => sample(i + j, j));
+				const done = await Promise.all(batch);
+				if (k > 1) await restore(root);
+				for (const x of done) if (x.n !== undefined) xs.push(x.n);
+				const bad = done.find(x => x.err);
+				if (bad) {
+					errors.push(bad.err!);
 					break;
 				}
-				xs.push(n);
-				(ms[m.name] ??= []).push(performance.now() - t0);
 			}
 			got[m.name] = [...(prior[m.name] ?? []), ...xs];
 			if (xs.length < m.samples) continue;
@@ -537,7 +542,11 @@ export default async function climb(pi: ExtensionAPI) {
 					const ps = since !== undefined && baseTree && candTree ? T.pairsOf(traces, goal, m.name, cmdId(m.cmd), baseTree, candTree, since).slice(0, n) : [];
 					if (ps.length) T.append(root, { ts: L.now(), kind: "reuse", phase: "paired", goal, metric: m.name, runs: 2 * ps.length });
 					// Three pairs that already decide with room to spare end it: the rest could not change the call.
-					for (let i = ps.length; i < n && !X.settled(m, ps); i++) {
+					// A parallel metric runs both sides of a pair at once; with more slots, several pairs at once (two slots each).
+					const both = X.slots(m) >= 2;
+					const P = Math.max(1, Math.floor(X.slots(m) / 2));
+					/** Pair i, in its batch's j-th place: its two values, or why it could not run. */
+					const pair = async (i: number, j: number): Promise<[number, number] | string> => {
 						const v: { a?: number; b?: number } = {};
 						/** One side's run: undefined when it ran, else why it could not. */
 						const one = async (side: "a" | "b"): Promise<string | undefined> => {
@@ -552,12 +561,12 @@ export default async function climb(pi: ExtensionAPI) {
 								v[side] = y;
 								return undefined;
 							}
-							progress?.(`${m.name} pair ${i + 1}/${n}, ${m.parallel ? "base and candidate at once" : who}`);
+							progress?.(`${m.name} pair ${i + 1}/${n}, ${both ? `base and candidate at once${P > 1 ? `, ${P} pairs at a time` : ""}` : who}`);
 							let r: Awaited<ReturnType<typeof run>> | undefined;
 							for (let attempt = 0; attempt < 2 && v[side] === undefined; attempt++) {
 								if (attempt > 0) await pause(signal);
-								// $CLIMB_SLOT tells two runs at once apart (their ports): 0 is the candidate, 1 the base.
-								r = await run(side === "a" ? dir : root, `export CLIMB_SLOT=${side === "a" ? 1 : 0}; ${m.cmd}`, m.timeout_s * 1000, tag, signal, attempt > 0, root);
+								// $CLIMB_SLOT tells runs at once apart (their ports): the candidate takes 2j, the base 2j + 1.
+								r = await run(side === "a" ? dir : root, `export CLIMB_SLOT=${2 * j + (side === "a" ? 1 : 0)}; ${m.cmd}`, m.timeout_s * 1000, tag, signal, attempt > 0, root);
 								if (signal?.aborted) throw new Error(`Measurement interrupted; nothing was decided and the experiment stays open.${since === undefined ? "" : RESUMES}`);
 								const y = r.code === 0 ? X.valueOf(r.stdout, m.name) : undefined;
 								if (y !== undefined && Number.isFinite(y)) {
@@ -570,15 +579,21 @@ export default async function climb(pi: ExtensionAPI) {
 						};
 						// Side by side, both runs see the same network and load: drift cancels exactly, in half the time.
 						// Which side starts first alternates too, so a head start (a warm cache, the first port) cancels.
-						const failed = m.parallel
+						const failed = both
 							? (await Promise.all(i % 2 ? [one("b"), one("a")] : [one("a"), one("b")])).find(Boolean)
 							: ((await one(i % 2 ? "b" : "a")) ?? (await one(i % 2 ? "a" : "b")));
-						if (failed) {
-							if (v.a === undefined && i === 0 && !Object.keys(out).length && !failed.includes("candidate")) return undefined; // the base cannot run it here
-							return failed;
+						return failed ?? [v.a!, v.b!];
+					};
+					for (let i = ps.length; i < n && !X.settled(m, ps); i += P) {
+						const batch = Array.from({ length: Math.min(P, n - i) }, (_, j) => pair(i + j, j));
+						for (const [q, r] of (await Promise.all(batch)).entries()) {
+							if (typeof r === "string") {
+								if (i + q === 0 && !Object.keys(out).length && !r.includes("candidate")) return undefined; // the base cannot run it here
+								return r;
+							}
+							ps.push(r);
+							if (baseTree && candTree) T.append(root, { ts: L.now(), kind: "pair", goal, metric: m.name, cmd: cmdId(m.cmd), base: baseTree, cand: candTree, a: r[0], b: r[1] });
 						}
-						ps.push([v.a!, v.b!]);
-						if (baseTree && candTree) T.append(root, { ts: L.now(), kind: "pair", goal, metric: m.name, cmd: cmdId(m.cmd), base: baseTree, cand: candTree, a: v.a!, b: v.b! });
 					}
 					out[m.name] = ps;
 					// The base's side is an unbiased sample of its tree: when a drop restores it, the next control reuses it.
@@ -1357,7 +1372,7 @@ export default async function climb(pi: ExtensionAPI) {
 					noise: S.opt(S.num("Floor for the relative noise; default 0.01. The real noise is measured by A/A runs")),
 					samples: S.opt(S.num("Runs per measurement, median taken; default 1, max 9. Noise shrinks with √samples: the lever for a noisy metric")),
 					timeout_s: S.opt(S.num("Per-run timeout in seconds; default 600")),
-					parallel: S.opt(S.bool("Base and candidate may run at the same time when paired (half the time; drift cancels exactly). The command must take its port or other exclusive resource from $CLIMB_SLOT (0 candidate, 1 base), e.g. --port=$((8875 + CLIMB_SLOT))")),
+					parallel: S.opt(S.num("Runs of this metric that may go at once, each with its own $CLIMB_SLOT (0, 1, ...) for its port or other exclusive resource, e.g. --port=$((8875 + CLIMB_SLOT)). 2: a pair's base and candidate at once (half the time; drift cancels exactly). 4: two pairs at once, and four samples at once in plain runs. Up to 8")),
 				}),
 				"1-3 metrics. Metrics with the same cmd share each run: the command prints one `name=value` line per metric",
 			),
@@ -1443,7 +1458,8 @@ export default async function climb(pi: ExtensionAPI) {
 				noise: pos(m.noise, 0.01),
 				samples: Math.min(9, Math.round(pos(m.samples, 1))),
 				timeout_s: pos(m.timeout_s, 600),
-				parallel: m.parallel || undefined,
+				// Strict-schema providers send 0 for "not given"; true (older callers) is 2.
+				parallel: m.parallel === true ? 2 : typeof m.parallel === "number" && m.parallel > 1 ? Math.min(8, Math.floor(m.parallel)) : undefined,
 				baseline: Number.NaN,
 			}));
 			const commands = [...metrics.map(m => m.cmd), p.guard ?? ""];
@@ -2350,7 +2366,7 @@ interface GoalParam {
 	goal?: string;
 }
 interface ScorecardParams extends GoalParam {
-	metrics: { name: string; cmd: string; dir: L.Dir; target?: number; hold?: boolean; unit?: string; noise?: number; samples?: number; timeout_s?: number; parallel?: boolean }[];
+	metrics: { name: string; cmd: string; dir: L.Dir; target?: number; hold?: boolean; unit?: string; noise?: number; samples?: number; timeout_s?: number; parallel?: boolean | number }[];
 	guard?: string;
 	frozen?: string[];
 	parked?: string[];
