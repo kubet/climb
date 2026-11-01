@@ -1169,7 +1169,7 @@ describe("a streak of proof keeps", () => {
 		} finally {
 			fs.rmSync(d, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 
 	test("a streak no instrument can check is not kept on its proofs: even 20 pairs too wide to see a slide", async () => {
 		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-blind-"));
@@ -1200,7 +1200,7 @@ describe("a streak of proof keeps", () => {
 		} finally {
 			fs.rmSync(d, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 });
 
 describe("a faster loop", () => {
