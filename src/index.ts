@@ -1560,6 +1560,15 @@ export default async function climb(pi: ExtensionAPI) {
 				);
 			}
 			if (reused.length) warnings.push(`Reused A/A runs of this commit for ${reused.join(", ")}.`);
+			// A slow metric run one at a time makes every experiment long: voice's proactivity judge took 5.5 min a run, so
+			// a close call's 6 pairs took an hour. Say what running it in parallel would save, while the card is being set.
+			for (const m of metrics) {
+				const one = T.runMs(T.read(root), g.id, m.name);
+				if (one === undefined || one < 120_000 || X.slots(m) > 1) continue;
+				warnings.push(
+					`${m.name} takes ~${T.dur(one)} a run, one at a time: a close call's ${X.PAIRS} pairs take ~${T.dur(one * 2 * X.PAIRS)}. If its runs can go at once (each takes its port from $CLIMB_SLOT), parallel: 2 halves that; if it makes many calls in a row inside one run, running those concurrently shortens every run.`,
+				);
+			}
 			const tracked = new Set((await git(root, "ls-files")).stdout.split("\n").filter(Boolean));
 			// An explicit list is authoritative (pass [] to freeze nothing); otherwise freeze what the commands execute.
 			const frozen = p.frozen ?? [...new Set(commands.flatMap(c => X.instrumentFiles(c, tracked)))];
