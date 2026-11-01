@@ -900,6 +900,8 @@ export default async function climb(pi: ExtensionAPI) {
 
 	/** Checked on the heartbeat: a newer climb on disk is loaded only by a new session. */
 	function checkUpdate(ctx: Ctx): void {
+		// Hosted by src/omp.ts (or Claude Code's host), a newer climb swaps itself in: there is nothing to restart.
+		if ((pi as { hot?: boolean }).hot || (pi as { harness?: string }).harness === "claude-code") return;
 		if (staleCode || !loadedStamp || sourceStamp() <= loadedStamp + 1000) return;
 		staleCode = true;
 		ctx.ui?.notify?.("climb: a newer version is installed. Restart omp (/exit, then omp -c) to load it; the climb resumes from its ledger.", "info");

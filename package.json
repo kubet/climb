@@ -1,15 +1,15 @@
 {
 	"name": "climb",
-	"version": "0.3.22",
+	"version": "0.4.0",
 	"description": "/climb — autonomous hill-climbing for pi-based coding agents (pi, omp). The extension owns the ledger, measures every metric itself, decides kept/dropped, reverts losers, blocks the agent from quitting, and calls a judge when progress stalls.",
 	"type": "module",
 	"keywords": ["pi-package", "omp", "pi", "extension", "autonomy", "hill-climbing"],
 	"files": ["src"],
 	"omp": {
-		"extensions": ["./src/index.ts"]
+		"extensions": ["./src/omp.ts"]
 	},
 	"pi": {
-		"extensions": ["./src/index.ts"]
+		"extensions": ["./src/omp.ts"]
 	},
 	"scripts": {
 		"test": "bun test"
