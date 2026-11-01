@@ -255,7 +255,16 @@ export default async function climb(pi: ExtensionAPI) {
 		const there = load(to);
 		const clash = [...ids].find(id => there.goals.has(id));
 		if (clash) throw new Error(`${to} already has a climb goal ${clash}; finish it there (/climb done ${clash}) or pass another goal.`);
-		L.append(to, ...L.read(from).filter(e => ids.has(e.goal)));
+		// Notes about the old checkout (its dirty tree, a binding, a move only the user could make) are not carried: once the
+		// goal had moved, platinum's judge still read "bound to platinum-dev" and asked the user to re-bind it.
+		const stale = (e: L.Entry) => e.kind === "learn" && e.text.includes(from);
+		L.append(to, ...L.read(from).filter(e => ids.has(e.goal) && !stale(e)), {
+			ts: L.now(),
+			kind: "learn",
+			goal: top.id,
+			type: "fact",
+			text: `This goal climbs in ${to} since ${L.now().slice(0, 16).replace("T", " ")} (moved from ${from}: ${why.split(";")[0]}); the climb moved it itself, and nothing about ${path.basename(from)} binds it now.`.slice(0, 600),
+		});
 		for (const t of T.read(from)) if (t.goal && ids.has(t.goal)) T.append(to, t);
 		await ensureExcluded(to);
 		append(from, ...[...ids].map(id => ({ ts: L.now(), kind: "moved" as const, goal: id, to })));

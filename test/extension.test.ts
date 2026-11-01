@@ -1371,9 +1371,14 @@ describe("move", () => {
 			const z = host(d, "main", "home");
 			await z.load();
 			await z.cmd("shrink the design");
+			await z.tool("climb_learn", { kind: "trap", text: `This goal is bound to ${d}, whose tree is dirty with another session's edit.` });
 			const out = await z.tool("climb_scorecard", card(`cd ${design} && cat work.txt`));
 			expect(out).toContain(`now climbs in ${design}`);
 			expect(L.fold(L.read(design)).goals.get("g-shrink-the-design")?.card).toBeDefined();
+			// What the goal learned about the checkout it left does not follow it; where it climbs now does.
+			const learned = L.fold(L.read(design)).goals.get("g-shrink-the-design")!.learned.map(l => l.text);
+			expect(learned.some(t => t.includes(`climbs in ${design}`))).toBe(true);
+			expect(learned.some(t => t.includes("is bound to"))).toBe(false);
 			expect(L.active(L.fold(L.read(d)))).toHaveLength(0);
 			expect(fs.readFileSync(path.join(d, "other.txt"), "utf8").trim()).toBe("edited");
 		} finally {
