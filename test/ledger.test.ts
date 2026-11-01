@@ -343,6 +343,22 @@ describe("ledger fold", () => {
 		expect(L.stuck(g)).toBe(false);
 	});
 
+	test("a stuck goal rests only itself: a tree with a workable part still climbs, a lone stuck leaf does not", () => {
+		const goal = (id: string, parent?: string): L.Entry => ({ ts: iso(9e6, nowMs), kind: "goal", goal: id, parent, intent: id, cfg: { poke_max: 3, beat_s: 1800 } });
+		// Root r split into parts a and b; the judge calls the root STUCK because one part needs the human.
+		const st = L.fold([goal("r"), goal("a", "r"), goal("b", "r"), { ts: iso(3e6, nowMs), kind: "judge", goal: "r", by: "judge", verdict: "stuck", diagnosis: "part b needs a credential", next: "provide the API credential" }]);
+		const r = st.goals.get("r")!;
+		expect(L.stuck(r)).toBe(true); // the root is flagged STUCK
+		expect(L.canClimb(st, r)).toBe(true); // but its parts are workable, so the tree still climbs
+		expect(L.workable(st, st.goals.get("a")!)).toBe(true);
+		expect(L.workable(st, r)).toBe(false); // an umbrella is climbed only through its parts
+		// The status line says it is still climbing, not that the whole thing is parked.
+		expect(X.statusLine(st, nowMs)).toContain("climbing the rest");
+		// A lone stuck leaf with nothing else rests: nothing in it is workable.
+		const solo = L.fold([goal("s"), { ts: iso(3e6, nowMs), kind: "judge", goal: "s", by: "judge", verdict: "stuck", diagnosis: "", next: "ask" }]);
+		expect(L.canClimb(solo, solo.goals.get("s")!)).toBe(false);
+	});
+
 	test("a STUCK verdict holds until something moves after it: research from before it is no progress at the next beat", () => {
 		const fresh = (): L.Entry[] => [
 			{ ts: iso(5e6, nowMs), kind: "goal", goal: "g", intent: "fast", cfg: { poke_max: 3, beat_s: 1800 } },

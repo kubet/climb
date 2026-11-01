@@ -422,6 +422,11 @@ export function knowledge(st: State, g: Goal): LearnE[] {
 
 /** Latest judge said "stuck" and nothing moved since: needs a human. */
 export const stuck = (g: Goal) => g.judge?.verdict === "stuck" && g.progressSeq < g.judgeSeq;
+/** A goal the worker can climb right now: open, present, measurable, not an umbrella, and not itself blocked by a stuck verdict. */
+export const workable = (st: State, g: Goal) => !g.done && !g.moved && !g.gone?.length && !umbrella(st, g) && !stuck(g);
+/** A stuck goal rests only itself: a tree the worker can still climb has at least one workable goal somewhere in it,
+ *  so one part waiting on the human never idles its siblings. */
+export const canClimb = (st: State, r: Goal) => subtree(st, r).some(x => workable(st, x));
 
 /** Since the last heartbeat (or goal start): was anything kept, did a judge speak? */
 export const keptSinceBeat = (g: Goal) => g.lastKeptSeq > (g.lastBeat?.seq ?? g.seq);

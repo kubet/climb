@@ -1160,16 +1160,24 @@ export default async function climb(pi: ExtensionAPI) {
 		const stale = progress ? 0 : inFlight ? count : count + 1;
 		append(root, { ts: L.now(), kind: "beat", goal: g.id, head: h, progress, stale, note: inFlight ? `${note ? `${note} · ` : ""}measuring` : note });
 
-		const after = load(root).goals.get(g.id)!;
-		if (paused || L.stuck(after)) return;
-		// Auto-steer: a goal the acceptance review held open, while the worker lets the stale beats pile up, gets a part
-		// for the review's unmet requirement, so the climb goes on without waiting for anyone (pry sat at 100% · review
-		// holds it · stale 20/3 until a judge called it STUCK).
-		if (stale >= g.cfg.poke_max && !after.stallPending && steer(ctx, root, after)) return;
-		if (stale >= g.cfg.poke_max && !after.stallPending) {
-			append(root, { ts: L.now(), kind: "stall", goal: g.id, stale });
-			void judge(ctx, root, g.id, "stall");
-			return;
+		const nowSt = load(root);
+		const after = nowSt.goals.get(g.id)!;
+		if (paused) return;
+		// A stuck goal rests only itself: while its tree still has workable parts the worker keeps climbing them
+		// (the idle nudge below steers to one), and only when nothing is workable does the goal wait for the human.
+		// A stuck goal is not re-judged or auto-steered: the human item stands; the rest of the tree climbs on.
+		const blocked = L.stuck(after);
+		if (blocked && !L.canClimb(nowSt, after)) return;
+		if (!blocked) {
+			// Auto-steer: a goal the acceptance review held open, while the worker lets the stale beats pile up, gets a
+			// part for the review's unmet requirement, so the climb goes on without waiting for anyone (pry sat at 100% ·
+			// review holds it · stale 20/3 until a judge called it STUCK).
+			if (stale >= g.cfg.poke_max && !after.stallPending && steer(ctx, root, after)) return;
+			if (stale >= g.cfg.poke_max && !after.stallPending) {
+				append(root, { ts: L.now(), kind: "stall", goal: g.id, stale });
+				void judge(ctx, root, g.id, "stall");
+				return;
+			}
 		}
 		const line = `[climb heartbeat ${g.id}] ${progress ? "progress" : `no progress (stale ${stale}/${g.cfg.poke_max})`}${note ? ` · ${note}` : ""}`;
 		if (idle) {
@@ -1298,10 +1306,10 @@ export default async function climb(pi: ExtensionAPI) {
 		const root = await repoRoot(ctx.cwd);
 		if (!root) return;
 		const st = load(root);
-		// A part rests with its root: a STUCK or judged tree does not hold the worker.
-		// A tree whose every open goal lost its instrument cannot be climbed: it rests with the user, like STUCK.
-		const climbable = (r: L.Goal) => L.subtree(st, r).some(x => !x.done && !x.moved && !x.gone?.length && !L.umbrella(st, x));
-		const goals = L.active(st).filter(g => !L.stuck(L.rootOf(st, g)) && climbable(L.rootOf(st, g)) && !judging.has(L.rootOf(st, g).id) && !judging.has(g.id));
+		// A stuck goal rests only itself: its siblings and the rest of its tree keep the worker. A tree rests (with the
+		// user, like a lost instrument) only when nothing in it is workable — every open goal is done, blocked by its
+		// own stuck verdict, or lost its instrument. One part waiting on the human never idles the other 86%.
+		const goals = L.active(st).filter(g => L.canClimb(st, L.rootOf(st, g)) && !judging.has(L.rootOf(st, g).id) && !judging.has(g.id));
 		if (st.paused || !goals.length || !lease(root, ctx)) {
 			stopIdle = 0;
 			stopLines = -1;

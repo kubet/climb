@@ -15,6 +15,7 @@ import {
 	gain,
 	knowledge,
 	met,
+	canClimb,
 	openParts,
 	parts,
 	rootOf,
@@ -22,6 +23,7 @@ import {
 	stuck,
 	subtree,
 	umbrella,
+	workable,
 } from "./ledger";
 
 export const MAX_GOALS = 2;
@@ -278,8 +280,15 @@ export function statusLine(st: State, nowMs = clock.ms()): string | undefined {
 		const ps = parts(st, g).length;
 		if (!g.card && !ps) return `${g.id}: researching (${g.probes.filter(p => p.value !== undefined).length} probes)`;
 		const due = g.lastBeat ? Math.max(0, g.cfg.beat_s - (nowMs - epoch(g.lastBeat.ts)) / 1000) : g.cfg.beat_s;
-		// Say what is wanted, not only the state: "100% · review holds it · STUCK" left the user guessing.
-		const flag = stuck(g) ? ` · STUCK, needs you: ${clip(g.judge!.next.replace(/[.\s]+$/, ""), 80)}` : g.stallPending ? " · STALL, judge reviewing" : "";
+		// Say what is wanted, not only the state: "100% · review holds it · STUCK" left the user guessing. A stuck
+		// goal that still has workable parts is not idle — it climbs the rest and only one part waits on the human.
+		const flag = stuck(g)
+			? canClimb(st, g)
+				? ` · climbing the rest; one part waits on you: ${clip(g.judge!.next.replace(/[.\s]+$/, ""), 60)}`
+				: ` · STUCK, needs you: ${clip(g.judge!.next.replace(/[.\s]+$/, ""), 80)}`
+			: g.stallPending
+				? " · STALL, judge reviewing"
+				: "";
 		const busy = openIn(st, g);
 		const where = busy ? ` · ${busy.open!.id}${busy !== g ? ` on ${busy.id}` : ""}` : "";
 		const held = g.reviewed && !split ? ` · targets met, the review wants: ${clip(g.reviewed.next.replace(/[.\s]+$/, ""), 60)}` : "";
@@ -389,7 +398,9 @@ export function nextAction(st: State, g: Goal, brief = false): string {
 		// Closing what is all but done is the cheapest win, wherever in the tree it waits. Then stay on the
 		// part being climbed: a drop is not a reason to switch (the drop streak and the judge decide that).
 		// A part that cannot be measured any more is not where the climb goes next while another can be.
-		const able = ps.filter(p => !subtree(st, p).every(x => x.done || x.gone?.length || umbrella(st, x)));
+		// Steer to a part the worker can actually climb: skip one blocked by its own stuck verdict (it waits on the
+		// human) as well as parts that are all done or lost their instrument. Fall back to listing all only if none can.
+		const able = ps.filter(p => subtree(st, p).some(x => workable(st, x)));
 		const pool = able.length ? able : ps;
 		const next = pool.find(p => openIn(st, p)) ?? pool.find(p => subtree(st, p).some(x => finishing(st, x))) ?? current(st, pool) ?? pool.find(p => !p.card && !umbrella(st, p)) ?? [...pool].sort((a, b) => goalPct(st, a) - goalPct(st, b))[0];
 		const list = ps.map(p => `${p.id} (${p.card || umbrella(st, p) ? `${goalPct(st, p)}%` : "researching"}${openIn(st, p) ? `, ${openIn(st, p)!.open!.id} open` : ""}${pool.includes(p) ? "" : ", instrument gone"})`).join(", ");

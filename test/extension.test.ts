@@ -1013,6 +1013,29 @@ describe("decomposition without an independent judge", () => {
 			fs.rmSync(d, { recursive: true, force: true });
 		}
 	});
+
+	test("a STUCK part does not idle its siblings: the worker is kept climbing the rest of the tree", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-stuck-sibling-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > a.txt && echo 100 > b.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "stuck-sib");
+			z.noJudge();
+			await z.load();
+			await z.cmd("shrink both");
+			await z.tool("climb_split", { parts: [{ intent: "shrink a" }, { intent: "shrink b" }] });
+			await z.tool("climb_scorecard", { goal: "g-shrink-a", metrics: [{ name: "a", cmd: "cat a.txt", dir: "down", target: 10, noise: 0.05 }] });
+			// The judge calls the root STUCK: part b genuinely needs the human (a credential).
+			L.append(d, { ts: L.now(), kind: "judge", goal: "g-shrink-both", by: "judge", verdict: "stuck", diagnosis: "shrink b needs a credential the worker cannot supply", next: "provide the deploy credential" });
+			// Not parked: the stop hook keeps the worker climbing, and steers it to the workable part, not the human item.
+			const stop = await z.emit("session_stop");
+			expect(stop?.decision).toBe("block");
+			expect(stop?.reason).toContain("g-shrink-a");
+			expect(stop?.reason).not.toContain("credential");
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
 });
 
 // Live: retrieval latency on unchanged code read 778 ms in a calm window and 946-1487 ms an hour later
