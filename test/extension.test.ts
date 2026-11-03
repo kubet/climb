@@ -1036,6 +1036,29 @@ describe("decomposition without an independent judge", () => {
 			fs.rmSync(d, { recursive: true, force: true });
 		}
 	});
+
+	test("a worker that only writes notes cannot dodge the stop-hook valve forever", async () => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "climb-noteloop-"));
+		const run = (c: string) => exec("bash", ["-c", c], { cwd: d });
+		try {
+			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && git add -A && git commit -qm init");
+			const z = host(d, "main", "noteloop");
+			z.noJudge();
+			await z.load();
+			await z.cmd("shrink work");
+			await z.tool("climb_scorecard", { metrics: [{ name: "w", cmd: "cat work.txt", dir: "down", target: 10, noise: 0.05 }] });
+			// No open experiment, no progress. A finding recorded each stop ("still waiting on the audit logs") must NOT
+			// reset the idle valve (it used to, keying on ledger lines, so such a goal looped the stop hook endlessly).
+			expect((await z.emit("session_stop"))?.decision).toBe("block");
+			await z.tool("climb_learn", { kind: "fact", text: "still waiting on the audit logs" });
+			expect((await z.emit("session_stop"))?.decision).toBe("block");
+			await z.tool("climb_learn", { kind: "fact", text: "still waiting on the audit logs, again" });
+			// Two no-work stops despite the notes: the valve escalates (no block) instead of looping.
+			expect(await z.emit("session_stop")).toBeUndefined();
+		} finally {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
 });
 
 // Live: retrieval latency on unchanged code read 778 ms in a calm window and 946-1487 ms an hour later
@@ -1329,6 +1352,7 @@ describe("parallel: 4", () => {
 		const cmd = `a=$(${now}); sleep 0.2; c=$(perl -MTime::HiRes=time -e 'printf "%d", time*100'); echo "\${CLIMB_SLOT:-x} $a $(${now})" >> ${log}; echo $(( $(cat work.txt) + (c - $(cat ${t0})) / 2 ))`;
 		try {
 			await run("git init -q && git config user.email t@t && git config user.name t && echo 100 > work.txt && echo x > README.md && git add -A && git commit -qm init");
+			process.env.CLIMB_NO_LOAD_CAP = "1"; // assert full parallelism deterministically; the load cap is unit-tested separately
 			const z = host(d, "main", "par4");
 			await z.load();
 			await z.cmd("faster");
@@ -1349,6 +1373,7 @@ describe("parallel: 4", () => {
 			fs.rmSync(d, { recursive: true, force: true });
 			fs.rmSync(log, { force: true });
 			fs.rmSync(t0, { force: true });
+			delete process.env.CLIMB_NO_LOAD_CAP;
 		}
 	}, { timeout: 30_000, retry: 2 }); // wall-clock drift: a loaded machine can decide the no-op before pairing it
 });

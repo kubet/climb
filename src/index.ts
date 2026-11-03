@@ -25,6 +25,8 @@ const TICK_MS = 15_000;
 const JUDGE_MS = 5 * 60_000;
 /** Cores on this machine: the headroom parallel measurement launches into (see X.concurrency). */
 const CORES = Math.max(1, os.cpus().length);
+/** The 1-minute load the concurrency cap reads. Tests set CLIMB_NO_LOAD_CAP to force full parallelism deterministically. */
+const loadNow = () => (process.env.CLIMB_NO_LOAD_CAP ? 0 : os.loadavg()[0]);
 const LEDGER_GUARD = "The climb ledger (.climb/) is append-only and owned by the climb extension. Read it with climb_status.";
 // Measuring runs every sample of every metric: it can outlast a script's or eval cell's timeout (omp's eval stops at one hour).
 const DIRECT = " Call it directly, not from eval or a script: measuring can outlast their timeouts.";
@@ -179,7 +181,7 @@ export default async function climb(pi: ExtensionAPI) {
 	let timer: unknown;
 	let beating = false;
 	let stopIdle = 0;
-	let stopLines = -1;
+	let stopWork = -1;
 	let rests = 0;
 	let judgeBroken = false;
 	const hasJudge = (ctx: Ctx) => typeof ctx.runEphemeralTurn === "function" && !judgeBroken;
@@ -418,7 +420,7 @@ export default async function climb(pi: ExtensionAPI) {
 			};
 			for (let i = 0; i < m.samples; ) {
 				// Launch into the machine's headroom: a metric's full width when it is calm, fewer when load is high.
-				const width = Math.min(k, m.samples - i, X.concurrency(k, os.loadavg()[0], CORES));
+				const width = Math.min(k, m.samples - i, X.concurrency(k, loadNow(), CORES));
 				const batch = Array.from({ length: width }, (_, j) => sample(i + j, j));
 				const done = await Promise.all(batch);
 				if (k > 1) await restore(root);
@@ -601,7 +603,7 @@ export default async function climb(pi: ExtensionAPI) {
 					};
 					for (let i = ps.length; i < n && !X.settled(m, ps); ) {
 						// Pairs at once, into the machine's headroom: back off from P when load is high (each pair is two runs).
-						const width = Math.min(P, n - i, X.concurrency(P, os.loadavg()[0], CORES));
+						const width = Math.min(P, n - i, X.concurrency(P, loadNow(), CORES));
 						const batch = Array.from({ length: width }, (_, j) => pair(i + j, j));
 						for (const [q, r] of (await Promise.all(batch)).entries()) {
 							if (typeof r === "string") {
@@ -1320,17 +1322,19 @@ export default async function climb(pi: ExtensionAPI) {
 		const goals = L.active(st).filter(g => L.canClimb(st, L.rootOf(st, g)) && !judging.has(L.rootOf(st, g).id) && !judging.has(g.id));
 		if (st.paused || !goals.length || !lease(root, ctx)) {
 			stopIdle = 0;
-			stopLines = -1;
+			stopWork = -1;
 			return;
 		}
-		// A worker that keeps stopping without touching the ledger is not working;
-		// let it rest and leave the next nudge to the heartbeat. Repeated rests with
-		// no progress escalate to the human.
-		stopIdle = st.lines === stopLines ? stopIdle + 1 : 0;
-		stopLines = st.lines;
+		// Idle means stopping again with no new climb WORK — a probe, scorecard, experiment, result, or progress.
+		// Keying this on the ledger's line count let a worker dodge it forever by appending a note each turn
+		// ("still waiting on the audit logs"), so a goal that could only move with outside data (a human paste, a
+		// credential) looped the stop hook endlessly. A note is not work; only work resets the count.
+		const work = Math.max(...goals.map(g => Math.max(g.workSeq, g.progressSeq)));
+		stopIdle = work === stopWork ? stopIdle + 1 : 0;
+		stopWork = work;
 		if (stopIdle >= 2) {
 			stopIdle = 0;
-			stopLines = -1;
+			stopWork = -1;
 			const progress = Math.max(...goals.map(g => g.progressSeq));
 			rests = progress === restProgress ? rests + 1 : 1;
 			restProgress = progress;
